@@ -1,0 +1,21 @@
+# Default ignored files
+/shelf/
+.idea
+
+# Editor-based HTTP Client requests
+/httpRequests/
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+
+# Solana/Anchor build artifacts
+nakama/target/
+nakama/.anchor/
+
+# Node
+node_modules/
+.yarn/
+
+*.json.bak
+test-ledger/
