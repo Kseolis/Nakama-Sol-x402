@@ -33,6 +33,13 @@ pub enum NakamaError {
     IllegalStateForCharge = 8,
     UnauthorizedCancel = 9,
     DuplicateAtaAndVault = 10,
+    // ADR-004 §8 — `charge` custom errors. Indices anticipate anchor-engineer
+    // appending in declaration order to `programs/nakama/src/error.rs`. If
+    // anchor-engineer chooses a different order, update these indices to match
+    // — the order of variants in the source file is the wire contract.
+    AtaMismatch = 11,
+    MintMismatch = 12,
+    VaultOwnerMismatch = 13,
 }
 
 impl NakamaError {
@@ -62,6 +69,10 @@ pub mod anchor_codes {
     /// (e.g. Token-2022 owned mint passed where classic Token program owner
     /// is required by `Account<'info, Mint>`).
     pub const ACCOUNT_OWNED_BY_WRONG_PROGRAM: u32 = 3007;
+    /// Anchor framework: `Program<'info, T>` saw a pubkey that didn't match
+    /// `T`'s embedded program id (e.g. Token-2022 program id passed where
+    /// `Program<'info, Token>` expects classic SPL Token).
+    pub const INVALID_PROGRAM_ID: u32 = 3008;
 }
 
 /// Pretty-print transaction failure metadata so a missed assertion shows full

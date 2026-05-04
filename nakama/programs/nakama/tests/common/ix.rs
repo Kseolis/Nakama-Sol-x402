@@ -21,6 +21,9 @@ use super::{
 const DISC_CREATE_PLAN: [u8; 8] = [77, 43, 141, 254, 212, 118, 41, 186];
 const DISC_SUBSCRIBE: [u8; 8] = [254, 28, 191, 138, 156, 179, 183, 53];
 const DISC_CANCEL: [u8; 8] = [232, 219, 223, 41, 219, 236, 220, 190];
+// `charge` discriminator: cross-checked against `target/idl/nakama.json`
+// (instruction "charge".discriminator) on 2026-05-04 after the handler landed.
+const DISC_CHARGE: [u8; 8] = [26, 55, 197, 209, 93, 77, 242, 15];
 
 // System program id (literal-encoded so we don't pull in solana-sdk-ids).
 fn system_program_id() -> Pubkey {
@@ -164,6 +167,56 @@ pub fn subscribe_ix_with_overrides(
             AccountMeta::new_readonly(token_program_id(), false),
             AccountMeta::new_readonly(system_program_id(), false),
             AccountMeta::new_readonly(rent_sysvar_id(), false),
+        ],
+        data,
+    }
+}
+
+// -- charge ----------------------------------------------------------------
+
+/// Build a `charge` ix following ADR-004 §9 Accounts struct order.
+///
+/// Order: subscription, plan, vault, merchant_ata, token_program, payer.
+/// `payer` is permissionless per ADR-004 §1 (no `Signer<'info>` constraint
+/// on subscriber/merchant). Caller passes whoever signs the tx.
+pub fn charge_ix(
+    subscription: &Pubkey,
+    plan: &Pubkey,
+    vault: &Pubkey,
+    merchant_ata: &Pubkey,
+    payer: &Pubkey,
+) -> Instruction {
+    charge_ix_with_overrides(
+        subscription,
+        plan,
+        vault,
+        merchant_ata,
+        payer,
+        &token_program_id(),
+    )
+}
+
+/// Power version: lets adversarial tests substitute the token program id
+/// (Token-2022 reject, ADR-004 §6).
+pub fn charge_ix_with_overrides(
+    subscription: &Pubkey,
+    plan: &Pubkey,
+    vault: &Pubkey,
+    merchant_ata: &Pubkey,
+    payer: &Pubkey,
+    token_prog: &Pubkey,
+) -> Instruction {
+    let data = DISC_CHARGE.to_vec();
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false),         // subscription PDA (mut)
+            AccountMeta::new_readonly(*plan, false),        // plan (read-only, has_one target)
+            AccountMeta::new(*vault, false),                // vault (mut, source of CPI)
+            AccountMeta::new(*merchant_ata, false),         // merchant_ata (mut, dest)
+            AccountMeta::new_readonly(*token_prog, false),  // token_program
+            AccountMeta::new(*payer, true),                 // payer signer (any pubkey)
         ],
         data,
     }
