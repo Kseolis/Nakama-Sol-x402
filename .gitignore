@@ -19,3 +19,6 @@ node_modules/
 
 *.json.bak
 test-ledger/
+.claude/
+/docs/
+/CLAUDE.md
