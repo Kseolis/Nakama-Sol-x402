@@ -241,3 +241,15 @@ pub struct SubscriptionCancelled {
     pub refunded: u64,
     pub timestamp: i64,
 }
+
+/// Emitted by `charge` after a successful CPI transfer (ADR-004 §5).
+/// `withdrawn_total` is the post-update cumulative settlement — single source
+/// of truth for keepers (event log beats account-state read because of races
+/// with parallel keepers; ADR-004 §7).
+#[event]
+pub struct SubscriptionCharged {
+    pub subscription: Pubkey,
+    pub amount: u64,
+    pub withdrawn_total: u64,
+    pub timestamp: i64,
+}

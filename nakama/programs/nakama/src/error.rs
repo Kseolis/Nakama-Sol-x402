@@ -77,4 +77,24 @@ pub enum NakamaError {
     /// against an empty vault. See `docs/impl-cycle-1-security-audit.md` §F-2.
     #[msg("subscriber_ata must not equal vault")]
     DuplicateAtaAndVault,
+
+    /// `merchant_ata.key() != subscription.merchant_ata`. Wired to the
+    /// `address = ...` constraint on `merchant_ata` in `Charge` (ADR-004 §9).
+    /// Custom variant gives operators context the generic Anchor
+    /// `ConstraintAddress` (2012) does not — we know precisely which ATA
+    /// got swapped (ADR-004 §8).
+    #[msg("merchant_ata does not match the subscription's snapshotted merchant ATA")]
+    AtaMismatch,
+
+    /// `vault.mint` or `merchant_ata.mint` != `subscription.token_mint`.
+    /// Defence-in-depth on top of Anchor's `token::mint` constraint —
+    /// see ADR-004 §8 / §9.
+    #[msg("token mint mismatch against the subscription snapshot")]
+    MintMismatch,
+
+    /// `vault.owner` != Subscription PDA. Covered by Anchor `token::authority`
+    /// already; the custom variant exists for explicit audit trail
+    /// (ADR-004 §8).
+    #[msg("vault authority is not the subscription PDA")]
+    VaultOwnerMismatch,
 }

@@ -1,7 +1,7 @@
 //! Nakama Protocol on-chain program.
 //!
-//! MVP day 1–7: `create_plan` (ADR-014), `subscribe` (ADR-002), `cancel` (ADR-002).
-//! `charge` (ADR-004) ships in a follow-up task.
+//! MVP day 1–7 surface: `create_plan` (ADR-014), `subscribe` (ADR-002),
+//! `charge` (ADR-004), `cancel` (ADR-002).
 //!
 //! See `docs/architecture/adr-001-account-model.md` for layout invariants.
 
@@ -41,6 +41,11 @@ pub mod nakama {
     /// ADR-002 — subscriber inits Subscription + vault and prefunds N periods.
     pub fn subscribe(ctx: Context<Subscribe>, periods_to_prefund: u8) -> Result<()> {
         instructions::subscribe::subscribe_handler(ctx, periods_to_prefund)
+    }
+
+    /// ADR-004 — permissionless streaming withdrawal (vault → merchant_ata).
+    pub fn charge(ctx: Context<Charge>) -> Result<()> {
+        instructions::charge::charge_handler(ctx)
     }
 
     /// ADR-002 — subscriber-only cancel: settle pro-rata, refund, close vault + Subscription.
