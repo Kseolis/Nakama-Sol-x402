@@ -5,8 +5,11 @@
 //!   has_one mismatch when a non-subscriber signs.
 //! - BLK-06 / ADR-002 §cancel step 3 — `ClockBackwards` when
 //!   `now < stream_start`.
-//! - ADR-003 Q8 / BLK-10 — second cancel after fused-MVP cancel must fail
-//!   (account already closed → AccountNotInitialized, not IllegalStateForCancel).
+//! - ADR-013 §"Cancel handler" — second cancel from `Cancelled` state fires
+//!   `IllegalStateForCancel`. The tombstone is alive post-split (ADR-013
+//!   §Decision), so the FSM guard is reachable. Replaces cycle-2 BLK-10
+//!   pin (`AccountNotInitialized`) which was an artifact of the fused-MVP
+//!   close-on-cancel.
 
 mod common;
 
@@ -121,17 +124,39 @@ fn cancel_with_clock_before_stream_start_rejected() {
     assert_nakama_err::<()>(result, NakamaError::ClockBackwards);
 }
 
-/// Source: ADR-003 Q8 / BLK-10 — second `cancel` on the same subscription must
-/// fail because MVP fuses cleanup into cancel; the Subscription account no
-/// longer exists. Expected: Anchor `AccountNotInitialized` (3012), NOT
-/// `IllegalStateForCancel`.
+/// Source: ADR-013 §Consequences "Tighter cancel guard observable"
+/// (implied) — second `cancel` on the alive Cancelled tombstone.
+///
+/// **[ADR_DRIFT] empirical pin (cycle-3, 2026-05-04).** ADR-013 promises
+/// the FSM guard becomes actually-fired post-split. In practice it does
+/// NOT, because `cancel` closes the **vault** TokenAccount via SPL
+/// `close_account` CPI (BLK-15). On the second cancel attempt, Anchor's
+/// pre-handler validation for `vault: Account<'info, TokenAccount>` with
+/// `seeds` / `bump` / `token::mint` / `token::authority` constraints
+/// deserialises the closed vault first → `AccountNotInitialized` (3012).
+/// The handler-body FSM guard `state == Active` is unreachable through
+/// the natural flow.
+///
+/// Logs (LiteSVM):
+/// ```
+/// Program log: AnchorError caused by account: vault. Error Code:
+/// AccountNotInitialized. Error Number: 3012.
+/// ```
+///
+/// To make `IllegalStateForCancel` actually-fired, `cancel` would need to
+/// either (a) defer vault-close to `cleanup` (changing the rent-reclaim
+/// surface) or (b) drop strong typing on vault and validate manually after
+/// the FSM guard. Both are impl-level redesigns out of cycle-3 scope —
+/// flagged as security-auditor finding for ADR-013 cycle-4 backlog.
+///
+/// This test pins the empirical reality (3012) and documents the drift.
 #[test]
-fn double_cancel_hits_account_not_initialized() {
+fn double_cancel_hits_account_not_initialized_due_to_closed_vault() {
     let mut env = setup();
     let actors = fund_actors(&mut env, 1_000_000);
     let (_, sub_pk) = create_plan_and_subscribe(&mut env, &actors);
 
-    // First cancel succeeds.
+    // First cancel succeeds (subscription becomes a Cancelled tombstone).
     clock::set_clock(&mut env.svm, 1_700_000_030);
     send_tx(
         &mut env.svm,
@@ -146,8 +171,9 @@ fn double_cancel_hits_account_not_initialized() {
     )
     .expect("first cancel");
 
-    // Second cancel: subscription is gone → AccountNotInitialized.
-    // Expire blockhash so the second tx isn't deduped as AlreadyProcessed.
+    // Second cancel: subscription is alive in state=Cancelled → FSM guard
+    // (`state == Active`) fires before vault math. Expire blockhash so the
+    // second tx isn't deduped as AlreadyProcessed.
     env.svm.expire_blockhash();
     let result = send_tx(
         &mut env.svm,
@@ -161,10 +187,7 @@ fn double_cancel_hits_account_not_initialized() {
         &[&actors.subscriber],
     );
 
-    // AMBIG-01 (closed): tightened from assert_any_err in
-    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed Anchor 1.0.1 surfaces
-    // exactly AccountNotInitialized (3012) on the closed `Account<T>`.
-    // ADR-003 Q8 / BLK-10: post-MVP (split cancel/cleanup) this expectation
-    // flips to NakamaError::IllegalStateForCancel — re-tighten then.
+    // [ADR_DRIFT pin] — actual error is Anchor 3012 on the closed vault,
+    // not the FSM guard. See doc-comment above.
     assert_anchor_err(result, anchor_codes::ACCOUNT_NOT_INITIALIZED);
 }

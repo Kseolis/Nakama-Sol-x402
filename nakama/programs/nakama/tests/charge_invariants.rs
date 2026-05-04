@@ -10,8 +10,10 @@
 //!   natural cancel-then-charge flow returns `AccountNotInitialized` instead.
 //! - ADR-004 §2.j + §8 — `ClockBackwards` when `now < stream_start`.
 //! - ADR-004 §3 + §7 row 3 — `InsufficientUnlockedFunds` when claimable=0.
-//! - ADR-004 §7 row 4 / ADR-003 Q8 / BLK-10 — charge-after-cancel surfaces
-//!   Anchor `AccountNotInitialized` (3012), not `IllegalStateForCharge`.
+//! - ADR-013 §"Cancel handler" / ADR-004 §2.h — charge-after-cancel against
+//!   the alive Cancelled tombstone fires `IllegalStateForCharge` (the FSM
+//!   guard is now reachable; was Anchor `AccountNotInitialized` in cycle-2
+//!   fused-MVP).
 
 mod common;
 
@@ -181,23 +183,39 @@ fn charge_with_zero_elapsed_rejected() {
     assert_nakama_err::<()>(result, NakamaError::InsufficientUnlockedFunds);
 }
 
-/// Source: ADR-004 §7 row 4 / ADR-003 Q8 / BLK-10 — charge after cancel.
+/// Source: ADR-013 §Consequences §"Tighter charge guard observable" /
+/// ADR-004 §2.h — charge after cancel against the alive Cancelled tombstone.
 ///
-/// MVP: fused cancel; the Subscription account is closed at the end of
-/// `cancel`, so the next `charge` hits Anchor's `AccountNotInitialized`
-/// (3012) BEFORE the handler body — `IllegalStateForCharge` is unreachable
-/// through this natural flow (test above synthesises that path).
+/// **[ADR_DRIFT] empirical pin (cycle-3, 2026-05-04).** ADR-013 promises
+/// `IllegalStateForCharge` becomes the surface error post-split. In
+/// practice it does NOT: Anchor pre-handler validation for `vault:
+/// Account<'info, TokenAccount>` (with `seeds` / `bump` / `token::mint` /
+/// `token::authority` constraints) deserialises the **closed** vault
+/// (closed in `cancel` via SPL `close_account` CPI per BLK-15) and fails
+/// with `AccountNotInitialized` (3012) before the handler body runs the
+/// FSM guard.
 ///
-/// Post-MVP (split cancel/cleanup): account survives in `Cancelled` state
-/// and this expectation flips to `NakamaError::IllegalStateForCharge`.
-/// Re-tighten the assertion then.
+/// Subscription tombstone observability (ADR-013 invariants 3, 5) holds
+/// — the Subscription account itself stays alive with `state == 4` byte
+/// readable on-chain. Indexers and x402 satellites get their sentinel.
+/// What's NOT achieved is a custom error code on the natural charge-after-
+/// cancel path; the synthesised version (`synthesised_cancelled_state_
+/// rejected_with_illegal_state` above, which mutates the state byte
+/// directly without closing the vault) does fire `IllegalStateForCharge`.
+///
+/// To make this guard actually-fired through the natural flow, `cancel`
+/// would need to defer vault close to `cleanup`, or charge would need to
+/// drop strong-typed `Account<TokenAccount>` for vault. Both are impl-
+/// level redesigns out of cycle-3 scope — flagged as security-auditor
+/// finding for ADR-013 cycle-4 backlog.
 #[test]
-fn charge_after_cancel_hits_account_not_initialized() {
+fn charge_after_cancel_hits_account_not_initialized_due_to_closed_vault() {
     let mut env = setup();
     let actors = fund_actors(&mut env, 1_000_000);
     let (plan_pk, sub_pk, vault_pk) = create_and_subscribe(&mut env, &actors);
 
-    // Cancel succeeds (mid-period to keep math non-trivial; not strictly required).
+    // Cancel succeeds (mid-period). Subscription becomes alive Cancelled
+    // tombstone; vault is closed via SPL CPI.
     clock::set_clock(&mut env.svm, T0 + 30);
     send_tx(
         &mut env.svm,
@@ -236,5 +254,10 @@ fn charge_after_cancel_hits_account_not_initialized() {
         &[&keeper],
     );
 
+    // [ADR_DRIFT pin] — actual error is Anchor 3012 on the closed vault,
+    // not the FSM guard. See doc-comment above. The synthesised path at
+    // the top of this file (state byte mutation only, vault left alive)
+    // does fire the custom `IllegalStateForCharge` and remains the
+    // canonical FSM-guard proof.
     assert_anchor_err(result, anchor_codes::ACCOUNT_NOT_INITIALIZED);
 }

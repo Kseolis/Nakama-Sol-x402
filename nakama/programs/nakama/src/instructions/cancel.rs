@@ -1,8 +1,18 @@
-//! `cancel` instruction — ADR-002 §cancel (revised 2026-04-27, fused with cleanup per ADR-003).
+//! `cancel` instruction — ADR-002 §cancel + ADR-013 §"Cancel handler" (cycle-3 split).
 //!
 //! Subscriber-only (BLK-08). Settle merchant fairly, refund subscriber pro-rata,
-//! close vault TokenAccount via explicit SPL CPI (BLK-15), close Subscription
-//! account via Anchor `close = subscriber` attribute.
+//! close vault TokenAccount via explicit SPL CPI (BLK-15). **Subscription account
+//! is preserved as a tombstone** — `state == Cancelled` is observable on-chain
+//! until subscriber calls `cleanup` (ADR-013 §Decision). Rent reclaim is the
+//! subscriber's choice of timing, never the merchant's (ADR-013 §Q1, §Q4).
+//!
+//! Post-split rationale (vs cycle-2 fused-cancel MVP):
+//! - Multi-party UX (ADR-009): merchant may extend `cancel` signer policy;
+//!   `cleanup` stays subscriber-only.
+//! - Audit trail: `getProgramAccounts` filter on `state == 4` lists pending
+//!   tombstones independently of event-log retention.
+//! - x402 forward-compat: tombstone serves as parent-state sentinel for
+//!   PaySession satellites (ADR-013 §"x402 forward-compat", R1).
 //!
 //! Hard guards:
 //! - BLK-08 `subscriber: Signer<'info>` + `has_one = subscriber` constraint.
@@ -26,12 +36,13 @@ pub struct Cancel<'info> {
     #[account(mut)]
     pub subscriber: Signer<'info>,
 
-    /// Subscription PDA — closed at end of handler, lamports → subscriber.
+    /// Subscription PDA — **preserved as tombstone** post-cancel (ADR-013).
     /// `has_one = subscriber` enforces that the signer matches the snapshotted
     /// subscriber, so an arbitrary account cannot cancel another's subscription.
+    /// No `close` attribute: account closure is the responsibility of
+    /// `cleanup` (ADR-013 §Q4).
     #[account(
         mut,
-        close = subscriber,
         has_one = subscriber @ NakamaError::UnauthorizedCancel,
         seeds = [SUB_SEED, subscription.subscriber.as_ref(), subscription.plan.as_ref()],
         bump = subscription.bump,
@@ -156,10 +167,9 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         token::transfer(cpi_ctx, refund)?;
     }
 
-    // Step 11 (set state) — symbolic; account closes immediately after.
-    // Mark before settle/event so an in-flight indexer event reflects the
-    // logical FSM transition, even though `state == Cancelled` is never
-    // observable on the on-chain byte (see ADR-003 §Cancel decomposition).
+    // Step 11 — set state to Cancelled. Post-split (ADR-013) this byte
+    // **persists** on-chain as a tombstone observable by indexer / x402
+    // satellites until the subscriber calls `cleanup`.
     {
         let sub_mut = &mut ctx.accounts.subscription;
         sub_mut.state = SubscriptionState::Cancelled;
@@ -199,7 +209,7 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         timestamp: now,
     });
 
-    // Subscription account closure handled by Anchor `close = subscriber`
-    // attribute on the Accounts struct.
+    // Subscription account intentionally NOT closed — tombstone preservation
+    // per ADR-013 §"Cancel handler". Subscriber reclaims rent via `cleanup`.
     Ok(())
 }

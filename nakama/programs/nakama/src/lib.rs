@@ -48,8 +48,15 @@ pub mod nakama {
         instructions::charge::charge_handler(ctx)
     }
 
-    /// ADR-002 — subscriber-only cancel: settle pro-rata, refund, close vault + Subscription.
+    /// ADR-002 + ADR-013 — subscriber-only cancel: settle pro-rata, refund,
+    /// close vault. Subscription account preserved as tombstone (cycle-3 split).
     pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
         instructions::cancel::cancel_handler(ctx)
+    }
+
+    /// ADR-013 — subscriber-only rent reclaim from {Cancelled, Exhausted}
+    /// tombstone. Closes the Subscription account, lamports → subscriber.
+    pub fn cleanup(ctx: Context<Cleanup>) -> Result<()> {
+        instructions::cleanup::cleanup_handler(ctx)
     }
 }

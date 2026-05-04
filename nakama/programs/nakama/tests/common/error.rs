@@ -40,6 +40,10 @@ pub enum NakamaError {
     AtaMismatch = 11,
     MintMismatch = 12,
     VaultOwnerMismatch = 13,
+    // ADR-013 §"Error enum additions" — cleanup variants. Indices follow
+    // declaration order in `programs/nakama/src/error.rs` (after VaultOwnerMismatch).
+    IllegalStateForCleanup = 14,
+    UnauthorizedCleanup = 15,
 }
 
 impl NakamaError {
@@ -175,5 +179,44 @@ pub fn assert_any_err(result: TransactionResult) -> FailedTransactionMetadata {
     match result {
         Ok(_) => panic!("expected tx failure but it succeeded"),
         Err(meta) => meta,
+    }
+}
+
+/// Assert the tx failed with the System Program's `AccountAlreadyInUse`
+/// variant, surfaced as `InstructionError::Custom(0)` from the
+/// `system_instruction::create_account` invocation inside Anchor's `init`
+/// codegen. ADR-013 §Q7: re-subscribe with the same `(subscriber, plan)`
+/// seeds against an alive Subscription tombstone hits this path before the
+/// handler body executes.
+///
+/// **Why a dedicated helper, not `assert_any_err`.** ADR-013 explicitly pins
+/// the surface error so the SDK can show "click cleanup first" instead of a
+/// generic failure. We pin the code here so a future refactor that reorders
+/// Anchor codegen (init-then-validate vs validate-then-init) can flip this
+/// expectation in one place.
+///
+/// Implementation note: `Custom(0)` from a non-Nakama program (System) is
+/// indistinguishable on the wire from a hypothetical Nakama variant at code
+/// 6000 — except that `NakamaError::ZeroPeriod` is the variant at code 6000
+/// and is unreachable from `subscribe`. Documenting the disambiguation here
+/// keeps the assertion honest.
+#[track_caller]
+pub fn assert_system_account_already_in_use(result: TransactionResult) {
+    let meta = match result {
+        Ok(_) => panic!("expected System Program AccountAlreadyInUse Custom(0) but tx succeeded"),
+        Err(meta) => meta,
+    };
+    let actual_code = extract_custom_code(&meta).unwrap_or_else(|| {
+        panic!(
+            "expected System Program Custom(0) (AccountAlreadyInUse), got non-Custom error.\n{}",
+            dump_meta(&meta)
+        )
+    });
+    if actual_code != 0 {
+        panic!(
+            "expected System Program Custom(0) (AccountAlreadyInUse), got Custom({}).\n{}",
+            actual_code,
+            dump_meta(&meta)
+        );
     }
 }
