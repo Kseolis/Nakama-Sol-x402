@@ -81,6 +81,17 @@ pub struct Subscribe<'info> {
 
 /// ADR-002 §subscribe pseudocode (revised 2026-04-27).
 pub fn subscribe_handler(ctx: Context<Subscribe>, periods_to_prefund: u8) -> Result<()> {
+    // F-2 (security audit): defense-in-depth before `top_up` ships in ADR-005.
+    // In MVP, vault is created here via Anchor `init`, so equality with
+    // subscriber_ata is impossible on first call. The guard hardens future
+    // top_up paths where the vault already exists (re-entry into a prefilled
+    // vault). See docs/impl-cycle-1-security-audit.md §F-2.
+    require_keys_neq!(
+        ctx.accounts.subscriber_ata.key(),
+        ctx.accounts.vault.key(),
+        NakamaError::DuplicateAtaAndVault
+    );
+
     // Step 1 — defence-in-depth: Plan.period > 0 (also enforced in create_plan).
     require!(ctx.accounts.plan.period > 0, NakamaError::ZeroPeriod);
 

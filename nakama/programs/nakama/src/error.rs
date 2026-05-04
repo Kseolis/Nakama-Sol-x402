@@ -69,4 +69,12 @@ pub enum NakamaError {
     /// BLK-08 / ADR-002 §cancel signer policy.
     #[msg("Only the subscription's subscriber may cancel it")]
     UnauthorizedCancel,
+
+    /// `subscriber_ata` and `vault` resolve to the same address.
+    /// Defence-in-depth before `top_up` ships in ADR-005; SPL Token's
+    /// `Transfer` is a documented no-op when source == destination, which
+    /// would let a relaxed `top_up` constraint set persist `deposited_amount`
+    /// against an empty vault. See `docs/impl-cycle-1-security-audit.md` §F-2.
+    #[msg("subscriber_ata must not equal vault")]
+    DuplicateAtaAndVault,
 }

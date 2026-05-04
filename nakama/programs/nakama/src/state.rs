@@ -13,24 +13,40 @@
 
 use anchor_lang::prelude::*;
 
-/// Subscription FSM state — see ADR-003 §State enum.
+/// Subscription FSM state — see ADR-003 §State enum, ADR-001 §`#[non_exhaustive]`
+/// scope clarification.
 ///
 /// `#[repr(u8)]` + explicit discriminants pin the byte representation: future
 /// variants append after `Cancelled` and never shift existing values
 /// (forward-compat invariant).
 ///
-/// `#[non_exhaustive]` requires off-chain consumers to keep a `_` arm so
-/// adding variants post-deploy doesn't panic decoders pinned to today's set.
+/// MVP uses only `Active` and `Cancelled`. The other three are pre-defined for
+/// post-hackathon stages (pause/resume, grace, exhausted) so their discriminants
+/// are stable from day 1.
 ///
-/// MVP uses only `Active` and `Cancelled`. The other three are pre-defined
-/// for post-hackathon stages (pause/resume, grace, exhausted) so their
-/// discriminants are stable from day 1.
+/// # `#[non_exhaustive]` covers Rust pattern-match exhaustiveness only
 ///
-/// Forward-compat caveat (sign-off handoff item 4): `AnchorDeserialize` for an
-/// `#[repr(u8)]` enum with named variants 0..=4 panics on unknown bytes. MVP
-/// only ever writes 0 (in `subscribe`) and 4 (in `cancel`, immediately followed
-/// by account close), so post-deploy reads only ever see 0. Custom Borsh impl
-/// to swallow unknown bytes is deferred to post-MVP.
+/// The attribute forces external Rust crate consumers (off-chain readers,
+/// indexer, keeper) that `match` this enum to keep a `_` arm. Adding a future
+/// variant in a redeploy will not break their compilation — the `_` arm
+/// absorbs the unknown discriminant. This is a **compile-time** guarantee for
+/// downstream crates.
+///
+/// # Borsh-decode panic on unknown discriminant is a separate concern
+///
+/// `AnchorDeserialize` (Borsh-derived) for a `#[repr(u8)]` enum with named
+/// variants 0..=4 **panics at runtime** when reading a byte ≥ 5 (e.g. after
+/// a future redeploy adds a 6th variant and an old client reads a new
+/// account). `#[non_exhaustive]` does **not** mitigate this — it only governs
+/// pattern-match completeness, not deserialization.
+///
+/// MVP mitigation: only `state = 0` (written in `subscribe`) and `state = 4`
+/// (written in `cancel`, immediately followed by `close_account` in the same
+/// instruction) ever persist on-chain. `state = 4` is never observable
+/// post-tx because the account is closed in the same slot — post-deploy
+/// reads in MVP only ever see `state = 0`. A custom `BorshDeserialize` impl
+/// that swallows unknown bytes (instead of panicking) is deferred to
+/// post-MVP (sign-off handoff item 4 / security audit F-3).
 #[repr(u8)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, AnchorSerialize, AnchorDeserialize, InitSpace)]

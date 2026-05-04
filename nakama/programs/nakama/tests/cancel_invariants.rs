@@ -12,9 +12,7 @@ mod common;
 
 use common::{
     clock,
-    error::{
-        anchor_codes, assert_anchor_err, assert_any_err, assert_nakama_err, NakamaError,
-    },
+    error::{anchor_codes, assert_anchor_err, assert_nakama_err, NakamaError},
     fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer,
 };
 
@@ -90,18 +88,11 @@ fn unauthorized_cancel_rejected() {
         &[&attacker],
     );
 
-    // Accept either ConstraintHasOne (Anchor declarative check) or the
-    // explicit UnauthorizedCancel guard if the program also asserts it.
-    let meta = assert_any_err(result);
-    let code = common::error::extract_custom_code(&meta).unwrap_or(0);
-    assert!(
-        code == anchor_codes::CONSTRAINT_HAS_ONE
-            || code == anchor_codes::CONSTRAINT_SEEDS
-            || code == NakamaError::UnauthorizedCancel.code(),
-        "expected has_one (2001) / seeds (2006) / UnauthorizedCancel (6009), got {} (logs: {:?})",
-        code,
-        meta.meta.logs
-    );
+    // AMBIG-02 (closed): tightened from assert_any_err in
+    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed the handler-side
+    // `require!` (BLK-08) fires before Anchor's `has_one`, so the code is
+    // always 6009 = NakamaError::UnauthorizedCancel.
+    assert_nakama_err::<()>(result, NakamaError::UnauthorizedCancel);
 }
 
 /// Source: ADR-002 §cancel step 3, BLK-06 — `now < stream_start` rejected with
@@ -156,6 +147,8 @@ fn double_cancel_hits_account_not_initialized() {
     .expect("first cancel");
 
     // Second cancel: subscription is gone → AccountNotInitialized.
+    // Expire blockhash so the second tx isn't deduped as AlreadyProcessed.
+    env.svm.expire_blockhash();
     let result = send_tx(
         &mut env.svm,
         &actors.subscriber,
@@ -168,19 +161,10 @@ fn double_cancel_hits_account_not_initialized() {
         &[&actors.subscriber],
     );
 
-    // Anchor 1.0.1 returns AccountNotInitialized (3012) for a closed
-    // Account<T>. If the impl uses a different close path, the runtime may
-    // surface a generic InstructionError::InvalidAccountData. Accept both.
-    let meta = assert_any_err(result);
-    let code = common::error::extract_custom_code(&meta);
-    assert!(
-        code == Some(anchor_codes::ACCOUNT_NOT_INITIALIZED) || code.is_none(),
-        "expected AccountNotInitialized (3012) or non-Custom InvalidAccountData, got {:?} (logs: {:?})",
-        code,
-        meta.meta.logs
-    );
-    // TODO(arch-review): see AMBIG-01 in test-engineer report — ADR-003 Q8
-    // resolves the *expected* error to `AccountNotInitialized`, but post-MVP
-    // (split cancel/cleanup) this should become `IllegalStateForCancel`.
-    let _ = assert_anchor_err; // silence unused warning if compiled out
+    // AMBIG-01 (closed): tightened from assert_any_err in
+    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed Anchor 1.0.1 surfaces
+    // exactly AccountNotInitialized (3012) on the closed `Account<T>`.
+    // ADR-003 Q8 / BLK-10: post-MVP (split cancel/cleanup) this expectation
+    // flips to NakamaError::IllegalStateForCancel — re-tighten then.
+    assert_anchor_err(result, anchor_codes::ACCOUNT_NOT_INITIALIZED);
 }

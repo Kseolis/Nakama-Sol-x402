@@ -32,6 +32,7 @@ pub enum NakamaError {
     IllegalStateForCancel = 7,
     IllegalStateForCharge = 8,
     UnauthorizedCancel = 9,
+    DuplicateAtaAndVault = 10,
 }
 
 impl NakamaError {
@@ -57,6 +58,10 @@ pub mod anchor_codes {
     pub const CONSTRAINT_HAS_ONE: u32 = 2001;
     /// Anchor: `address = ...` constraint failed.
     pub const CONSTRAINT_ADDRESS: u32 = 2012;
+    /// Anchor framework: account owner program differs from the expected one
+    /// (e.g. Token-2022 owned mint passed where classic Token program owner
+    /// is required by `Account<'info, Mint>`).
+    pub const ACCOUNT_OWNED_BY_WRONG_PROGRAM: u32 = 3007;
 }
 
 /// Pretty-print transaction failure metadata so a missed assertion shows full

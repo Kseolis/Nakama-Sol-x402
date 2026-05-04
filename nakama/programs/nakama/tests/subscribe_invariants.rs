@@ -8,7 +8,7 @@ mod common;
 
 use common::{
     error::{assert_nakama_err, NakamaError},
-    fund_actors, ix, plan_pda, send_tx, setup, Signer,
+    fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, vault_pda, Signer,
 };
 
 /// Source: ADR-002 §subscribe step 2, BLK-07 — `periods_to_prefund == 0` rejected.
@@ -144,9 +144,81 @@ fn subscribe_with_wrong_mint_ata_rejected() {
         &[&actors.subscriber],
     );
 
-    // We don't pin the *exact* Anchor error code (could be ConstraintTokenMint
-    // or InvalidProgramId or address mismatch on the `token_mint` account
-    // depending on which constraint fires first). Only assert it failed —
-    // the *important* invariant is "no silent accept of foreign mint".
+    // AMBIG-03 (closed): tightened from assert_any_err in
+    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed Anchor's
+    // `token::mint = plan.token_mint` constraint on `subscriber_ata` fires
+    // first → ConstraintTokenMint (2014).
+    common::error::assert_anchor_err(result, common::error::anchor_codes::CONSTRAINT_TOKEN_MINT);
+}
+
+/// Source: `docs/impl-cycle-1-security-audit.md` §F-2 — defense-in-depth:
+/// `subscribe` must reject `subscriber_ata == vault`. Without that guard,
+/// SPL Token's no-op self-transfer would pollute Subscription with
+/// `deposited_amount` while the vault stays empty (subscriber pays
+/// nothing yet has a "valid" subscription).
+///
+/// Construction (approach (a) per Phase 1c spec): pre-plant an SPL
+/// TokenAccount at the deterministic vault PDA address (mint=USDC,
+/// owner=subscriber so existing `token::authority` constraint cannot
+/// short-circuit), then call subscribe with `subscriber_ata = vault_pda`.
+///
+/// Why `assert_any_err` (intentional, not AMBIG): Anchor account
+/// validation (`init` on vault) runs **before** the handler body, so the
+/// pre-planted account triggers System Program `AccountAlreadyInUse`
+/// (`Custom(0)`) before the handler's `require_keys_neq!` ever executes.
+/// The security invariant "subscriber_ata == vault is rejected" is proven
+/// today via the collision path; the explicit `DuplicateAtaAndVault`
+/// require! only becomes reachable when ADR-005 `top_up` lands (vault
+/// already initialized → no collision → require! fires). Tightening
+/// to `assert_nakama_err(_, DuplicateAtaAndVault)` is deferred to the
+/// ADR-005 cycle for that reason.
+#[test]
+fn subscribe_with_subscriber_ata_equal_to_vault_rejected() {
+    let mut env = setup();
+    let actors = fund_actors(&mut env, 50_000_000);
+
+    let plan_id = 4u64;
+    send_tx(
+        &mut env.svm,
+        &actors.merchant,
+        &[ix::create_plan_ix(
+            &actors.merchant.pubkey(),
+            &actors.merchant_ata,
+            plan_id,
+            5_000_000,
+            60,
+        )],
+        &[&actors.merchant],
+    )
+    .expect("create_plan");
+
+    let (plan_pk, _) = plan_pda(&actors.merchant.pubkey(), plan_id);
+    let (sub_pk, _) = subscription_pda(&actors.subscriber.pubkey(), &plan_pk);
+    let (vault_pk, _) = vault_pda(&sub_pk);
+
+    // Plant a SPL TokenAccount at the vault PDA address with mint=USDC,
+    // owner=subscriber. Both `token::mint` and `token::authority`
+    // constraints on `subscriber_ata` would pass on this account.
+    common::install_token_account(
+        &mut env.svm,
+        &vault_pk,
+        &common::usdc_mint(),
+        &actors.subscriber.pubkey(),
+        0,
+    );
+
+    let result = send_tx(
+        &mut env.svm,
+        &actors.subscriber,
+        &[ix::subscribe_ix(
+            &actors.subscriber.pubkey(),
+            &plan_pk,
+            &vault_pk, // subscriber_ata == vault — F-2 attack vector
+            1,
+        )],
+        &[&actors.subscriber],
+    );
+
+    // F-2: assert_any_err is intentional — see doc-comment above.
     common::error::assert_any_err(result);
 }

@@ -15,7 +15,7 @@
 mod common;
 
 use common::{
-    error::{anchor_codes, assert_any_err, extract_custom_code},
+    error::{anchor_codes, assert_anchor_err, assert_any_err, extract_custom_code},
     fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, vault_pda, Signer,
 };
 use solana_program::program_pack::Pack;
@@ -74,6 +74,9 @@ fn ata_owner_spoofing_rejected() {
 
     // Expected: ConstraintTokenOwner (2015). Accept any failure to not
     // over-pin Anchor's exact error.
+    // assert_any_err retained intentionally — not part of AMBIG-01..04
+    // scope. Tighten in a future cleanup pass once `top_up` lands and the
+    // adversary surface for `subscriber_ata.owner` is locked.
     let meta = assert_any_err(result);
     let code = extract_custom_code(&meta);
     assert!(
@@ -160,6 +163,8 @@ fn vault_cross_subscription_replay_rejected() {
         &[&actors.subscriber],
     );
 
+    // assert_any_err retained — not part of AMBIG-01..04 scope. Multiple
+    // valid failure paths (ConstraintSeeds vs already-initialized vault).
     let _ = assert_any_err(result);
 }
 
@@ -215,6 +220,8 @@ fn plan_substitution_attack_rejected() {
         &[&actors.subscriber],
     );
 
+    // assert_any_err retained — not part of AMBIG-01..04 scope. Either
+    // ConstraintSeeds or an init failure is acceptable.
     let _ = assert_any_err(result);
 }
 
@@ -275,8 +282,10 @@ fn token_2022_mint_reject_in_create_plan() {
         &[&actors.merchant],
     );
 
-    // Anchor: address constraint on `token_mint` is pinned to USDC_MINT in
-    // the IDL — that fires first (ConstraintAddress / 2012). Either way it
-    // must fail and not silently accept a Token-2022 mint.
-    let _ = assert_any_err(result);
+    // AMBIG-04 (closed): tightened from assert_any_err in
+    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed Anchor's
+    // `Account<'info, Mint>` rejects the foreign-program-owned mint with
+    // AccountOwnedByWrongProgram (3007), not the IDL `address = USDC_MINT`
+    // constraint — owner check fires first.
+    assert_anchor_err(result, anchor_codes::ACCOUNT_OWNED_BY_WRONG_PROGRAM);
 }
