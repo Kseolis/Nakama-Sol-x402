@@ -31,10 +31,13 @@ pub const GRACE_SEED: &[u8] = b"grace";
 /// Hardcoded — no per-Plan override (rejected alternative (f); ADR-007 §Open Q1).
 pub const GRACE_DURATION: i64 = 7 * 24 * 60 * 60;
 
-// Forward-compat seed namespaces reserved for x402 layer (day 8 GO).
-// Documented here so anchor-engineer / sdk-engineer share a single source of truth.
-// pub const PAY_SESSION_SEED: &[u8] = b"pay_session";
-// pub const MERCHANT_SEED:    &[u8] = b"merchant";
+/// PDA seed for `PaySession` satellite accounts (ADR-x402-001).
+/// Seeds: `[PAY_SESSION_SEED, subscription.key().as_ref(), &session_id.to_le_bytes()]`.
+/// See ADR-x402-001 §"PaySession PDA Layout" (Q2 — u64 nonce client-gen).
+pub const PAY_SESSION_SEED: &[u8] = b"pay_session";
+
+// Forward-compat seed namespace reserved for ADR-010 merchant key rotation.
+// pub const MERCHANT_SEED: &[u8] = b"merchant";
 
 /// USDC mint — cluster-conditional per ADR-001 §USDC mint constant (BLK-11).
 ///

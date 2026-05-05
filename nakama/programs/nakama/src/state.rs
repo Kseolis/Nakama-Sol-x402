@@ -341,3 +341,148 @@ pub struct GraceRecovered {
     pub top_up_amount: u64,
     pub new_deposited: u64,
 }
+
+// ── ADR-x402-001 — PaySession satellite layer ────────────────────────────
+//
+// Satellite-PDA pattern (blueprint from PausedSubscription / GracedSubscription):
+// PaySession is a child account of Subscription, parented by the seed prefix
+// `[b"pay_session", subscription.key, session_id_le]`. Subscription layout
+// itself is untouched — x402 layer is zero-footprint on the parent
+// (ADR-x402-001 §Decision).
+//
+// Layout: 202 bytes payload + 8-byte discriminator = 210 bytes total.
+// const-asserted below to detect drift.
+
+/// Internal FSM for PaySession — three states. **Independent** from
+/// `SubscriptionState` (parent FSM stays unchanged per ADR-003 invariant).
+///
+/// Discriminants are wire-stable; never reorder, never reuse — append new
+/// variants with `= 3, 4, ...` at the end. `#[non_exhaustive]` is hygiene
+/// matching the SubscriptionState pattern (forward-compat without semver
+/// break).
+///
+/// `Settling` is a **transient** state — observable on disk only if a settle
+/// instruction crashed mid-CPI. Recovery via `force_close_session` (R3,
+/// post-MVP).
+#[repr(u8)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, AnchorSerialize, AnchorDeserialize)]
+#[borsh(use_discriminant = true)]
+pub enum PaySessionState {
+    /// Active session, settle_usage allowed (subject to `parent.state == Active`).
+    Open = 0,
+    /// Transient lock, set immediately before settle CPI; cleared post-CPI.
+    Settling = 1,
+    /// Terminal — rent reclaimed, PDA closed.
+    Closed = 2,
+}
+
+/// PaySession satellite — per-session ledger for x402 micropayment streams.
+///
+/// One Subscription → N concurrent PaySessions (ADR-x402-001 Q1, u64 nonce).
+/// Snapshot pattern follows ADR-001 — `merchant`, `merchant_ata` copied from
+/// parent at `open_session` time so settle CPI doesn't need parent traversal
+/// for routing data.
+///
+/// Layout (ADR-x402-001 §"PaySession PDA Layout"):
+///
+/// | Offset | Size | Field            |
+/// |--------|------|------------------|
+/// | 0      | 32   | subscription     |
+/// | 32     | 32   | merchant         |
+/// | 64     | 32   | merchant_ata     |
+/// | 96     | 32   | facilitator      |
+/// | 128    | 8    | session_id       |
+/// | 136    | 8    | opened_at        |
+/// | 144    | 8    | last_settle_at   |
+/// | 152    | 8    | usage_amount     |
+/// | 160    | 8    | reservation_cap  |
+/// | 168    | 1    | state            |
+/// | 169    | 1    | bump             |
+/// | 170    | 32   | reserved         |
+///
+/// Total: 202 bytes (+8 discriminator = 210 on the wire).
+#[account]
+#[derive(InitSpace)]
+pub struct PaySession {
+    /// Parent Subscription PDA (back-reference for off-chain joins).
+    /// Defence-in-depth above the PDA seed constraint — handler verifies
+    /// `pay_session.subscription == parent.key()`.
+    pub subscription: Pubkey,
+    /// Snapshot of `parent.merchant` at open_session — settlement destination
+    /// owner identity, for off-chain analytics. Immutable post-init.
+    pub merchant: Pubkey,
+    /// Snapshot of `parent.merchant_ata` — settle CPI destination ATA.
+    /// Immutable; CPI handler asserts `merchant_ata.key() == this`.
+    pub merchant_ata: Pubkey,
+    /// Subscriber-chosen authority for `settle_usage`. ADR-x402-001 Q5
+    /// Option A — on-chain delegation. Rotation requires close + reopen.
+    pub facilitator: Pubkey,
+    /// u64 nonce from PDA seeds, mirrored on-chain for off-chain readability.
+    /// Must match the seed `&session_id.to_le_bytes()` (defensive cross-check
+    /// in handler — Anchor seed validation already guarantees uniqueness).
+    pub session_id: u64,
+    /// `Clock::get().unix_timestamp` at `open_session`.
+    pub opened_at: i64,
+    /// Last settle timestamp; `0` means "never settled".
+    pub last_settle_at: i64,
+    /// Cumulative settle volume across this session (monotonic non-decreasing).
+    /// Per-session ledger — cross-session aggregates read from
+    /// `parent.withdrawn_amount` (single source of truth, ADR-002).
+    pub usage_amount: u64,
+    /// Soft-cap on total session usage. `0` means "unlimited up to escrow".
+    /// Enforced by handler (`usage_amount + amount <= reservation_cap`).
+    /// ADR-x402-001 §Adversarial 3 / §8 — bounds compromised-key damage.
+    pub reservation_cap: u64,
+    /// `PaySessionState` discriminant. Open=0, Settling=1, Closed=2.
+    pub state: u8,
+    /// PDA bump cache (BLK-03 — never re-derive on subsequent calls).
+    pub bump: u8,
+    /// Forward-compat: variable rate, expiry, fee-split partner.
+    /// 32 bytes per ADR-x402-001 §"Forward compat".
+    pub reserved: [u8; 32],
+}
+
+// Compile-time invariant: PaySession payload must be exactly 202 bytes.
+// Drift here surfaces as a build failure; the test
+// `pay_session_init_space_is_202_bytes` provides a runtime mirror.
+const _: () = {
+    if PaySession::INIT_SPACE != 202 {
+        panic!("ADR-x402-001 PaySession::INIT_SPACE drift — must be 202 bytes");
+    }
+};
+
+/// Emitted by `open_session`. Off-chain indexers track session creation,
+/// expected facilitator, and reservation cap.
+#[event]
+pub struct PaySessionOpened {
+    pub pay_session: Pubkey,
+    pub subscription: Pubkey,
+    pub facilitator: Pubkey,
+    pub reservation_cap: u64,
+    pub timestamp: i64,
+}
+
+/// Emitted by `settle_usage` after CPI completes. `cumulative_usage` is the
+/// post-update `pay_session.usage_amount` — single-source readout for
+/// facilitator off-chain accounting.
+#[event]
+pub struct UsageSettled {
+    pub pay_session: Pubkey,
+    pub subscription: Pubkey,
+    pub amount: u64,
+    pub cumulative_usage: u64,
+    pub timestamp: i64,
+}
+
+/// Emitted by `close_session` immediately before Anchor's `close = subscriber`
+/// constraint deallocates the PDA. `final_usage` mirrors the last
+/// `cumulative_usage` for audit trail closure.
+#[event]
+pub struct PaySessionClosed {
+    pub pay_session: Pubkey,
+    pub subscription: Pubkey,
+    pub final_usage: u64,
+    pub rent_returned_to: Pubkey,
+    pub timestamp: i64,
+}

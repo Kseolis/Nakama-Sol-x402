@@ -100,9 +100,13 @@ fn pay_session_state_round_trips_through_borsh() {
         original
             .serialize(&mut buf)
             .expect("serialize PaySessionState");
-        assert_eq!(buf.len(), 1, "PaySessionState must serialize to a single byte");
-        let decoded = PaySessionState::deserialize(&mut &buf[..])
-            .expect("deserialize PaySessionState");
+        assert_eq!(
+            buf.len(),
+            1,
+            "PaySessionState must serialize to a single byte"
+        );
+        let decoded =
+            PaySessionState::deserialize(&mut &buf[..]).expect("deserialize PaySessionState");
         assert_eq!(decoded, original);
     }
 }

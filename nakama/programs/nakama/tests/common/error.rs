@@ -56,6 +56,21 @@ pub enum NakamaError {
     // MissingGraceSatellite).
     NoCancelAuthority = 19,
     SubscriberAccountMismatch = 20,
+    // ADR-x402-001 — twelve x402 PaySession variants, codes 6021..6032.
+    // Order is wire-stable; matches declaration order in
+    // `programs/nakama/src/error.rs`.
+    UnauthorizedOpenSession = 21,
+    ParentNotActive = 22,
+    ReservationCapExceedsEscrow = 23,
+    IllegalAmountForSettle = 24,
+    IllegalStateForSettle = 25,
+    ReservationCapExceeded = 26,
+    UnauthorizedFacilitator = 27,
+    PaySessionParentMismatch = 28,
+    IllegalStateForClose = 29,
+    UnauthorizedClose = 30,
+    ArithmeticOverflow = 31,
+    PaySessionMerchantAtaMismatch = 32,
 }
 
 impl NakamaError {

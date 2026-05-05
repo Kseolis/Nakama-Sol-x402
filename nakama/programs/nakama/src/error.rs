@@ -149,4 +149,87 @@ pub enum NakamaError {
     /// merchant is the signer. ADR-009 §"Rent-flow invariant".
     #[msg("subscriber account does not match the snapshotted subscriber")]
     SubscriberAccountMismatch,
+
+    // ── ADR-x402-001 (PaySession satellite layer) ──────────────────────────
+    // Codes 6021..6032 — twelve variants per ADR-x402-001 §"Error variants added".
+    // Order is wire-stable; never reorder, only append.
+    /// `open_session` signer mismatch — subscriber must match `parent.subscriber`
+    /// (declarative `has_one` triggers this). ADR-x402-001 §"open_session".
+    #[msg("Only the subscription's subscriber may open a PaySession")]
+    UnauthorizedOpenSession,
+
+    /// Boundary contract violated — `parent.state != Active` for an x402
+    /// instruction that requires Active parent (open_session, settle_usage).
+    /// Single guard covers Paused / GracePeriod / Cancelled / Exhausted.
+    /// ADR-x402-001 §"Boundary contracts" (inherited from ADR-007).
+    #[msg("Parent Subscription is not Active; x402 ix not allowed")]
+    ParentNotActive,
+
+    /// `open_session` rejected — `reservation_cap` exceeds the parent's
+    /// remaining escrow (`deposited - withdrawn`). Defence against opening
+    /// a session that promises more than the parent escrow can fulfil.
+    /// ADR-x402-001 §"open_session" + §Adversarial 3.
+    #[msg("reservation_cap exceeds remaining parent escrow")]
+    ReservationCapExceedsEscrow,
+
+    /// `settle_usage(amount)` called with `amount == 0` — would no-op while
+    /// still consuming CU and emitting a misleading event.
+    /// ADR-x402-001 §"settle_usage".
+    #[msg("Settle amount must be greater than zero")]
+    IllegalAmountForSettle,
+
+    /// `settle_usage` called when `pay_session.state != Open`. Reachable when
+    /// (a) a previous settle crashed mid-CPI leaving `Settling` on disk, or
+    /// (b) caller attempts settle on a closed session (Anchor would also
+    /// surface AccountNotInitialized in case (b)). ADR-x402-001 §"Internal FSM".
+    #[msg("PaySession is not Open; settle not allowed")]
+    IllegalStateForSettle,
+
+    /// `settle_usage(amount)` would push `pay_session.usage_amount` past
+    /// `pay_session.reservation_cap`. Bounds the damage from a compromised
+    /// or malicious facilitator key. ADR-x402-001 §"settle_usage" +
+    /// §Adversarial 3 / §8.
+    #[msg("settle_usage would exceed reservation_cap")]
+    ReservationCapExceeded,
+
+    /// `settle_usage` signer is not `pay_session.facilitator`. ADR-x402-001
+    /// §"Facilitator authority model" (Q5 Option A — on-chain delegation).
+    #[msg("signer is not the authorised facilitator for this PaySession")]
+    UnauthorizedFacilitator,
+
+    /// `pay_session.subscription` does not match the parent passed in the
+    /// instruction context. Defence-in-depth above the PDA seed constraint.
+    /// ADR-x402-001 §Adversarial 9 (cross-session replay).
+    #[msg("PaySession parent reference does not match the supplied parent")]
+    PaySessionParentMismatch,
+
+    /// `close_session` rejected — `pay_session.state != Open`. The transient
+    /// `Settling` byte should never persist after a successful settle; if it
+    /// does, the recovery path is `force_close_session` (post-MVP, R3).
+    /// ADR-x402-001 §"close_session" + §Adversarial 4.
+    #[msg("PaySession is not Open; close not allowed (Settling stuck — see R3)")]
+    IllegalStateForClose,
+
+    /// `close_session` signer mismatch — only subscriber may close.
+    /// Forward-injection from ADR-013 §Q1: rent recipient is always the
+    /// subscriber, not the facilitator or any third party.
+    /// ADR-x402-001 §"close_session".
+    #[msg("Only the subscription's subscriber may close a PaySession")]
+    UnauthorizedClose,
+
+    /// PaySession-specific overflow detector. We re-introduce the variant
+    /// (rather than reuse the existing `MathOverflow`) so the error message
+    /// can carry the x402 context — keepers / facilitators can route
+    /// log-grep on the specific code without tracing back to the generic
+    /// arithmetic path. ADR-x402-001 §Adversarial 6.
+    #[msg("Arithmetic overflow in x402 settlement math")]
+    ArithmeticOverflow,
+
+    /// `settle_usage` was passed a `merchant_ata` that does not match
+    /// `pay_session.merchant_ata` snapshot. Distinct from the existing
+    /// `AtaMismatch` (which keys off `Subscription.merchant_ata`) — the x402
+    /// variant lets operators diagnose mis-routing per-session vs per-sub.
+    /// ADR-x402-001 §"settle_usage".
+    #[msg("merchant_ata does not match the PaySession's snapshotted ATA")]
+    PaySessionMerchantAtaMismatch,
 }
