@@ -58,9 +58,11 @@ pub enum NakamaError {
     #[msg("Subscription is not in a state that allows cancellation")]
     IllegalStateForCancel,
 
-    /// FSM guard: `charge` legal only from `Active`. ADR-003 §FSM enforcement.
-    /// (Reserved for post-MVP; in MVP, charge-after-cancel hits Anchor
-    /// `AccountNotInitialized` because cancel fuses cleanup — see ADR-003 Q8.)
+    /// FSM guard: `charge` legal only from `Active`. ADR-003 §FSM enforcement,
+    /// ADR-004 §2.h. Post-ADR-013 split this guard is reachable: `cancel` no
+    /// longer closes the Subscription account, so a `charge` against a
+    /// Cancelled tombstone deserialises the state byte and fires this variant
+    /// (was Anchor `AccountNotInitialized` in cycle-2 fused-cancel MVP).
     #[msg("Subscription is not Active; charge not allowed")]
     IllegalStateForCharge,
 
@@ -97,4 +99,20 @@ pub enum NakamaError {
     /// (ADR-004 §8).
     #[msg("vault authority is not the subscription PDA")]
     VaultOwnerMismatch,
+
+    /// FSM guard: `cleanup` legal only from `Cancelled` or `Exhausted`.
+    /// From {Active, Paused, GracePeriod} the caller must `cancel` first
+    /// (fair settle + refund) — closes the rage-cleanup vector where a
+    /// subscriber would reclaim rent without paying the merchant for
+    /// already-streamed time. ADR-013 §"Per-state cleanup eligibility".
+    #[msg("cleanup is only allowed in Cancelled or Exhausted states")]
+    IllegalStateForCleanup,
+
+    /// `cleanup` signer != `subscription.subscriber`. Defence-in-depth above
+    /// the `has_one = subscriber` Anchor constraint. Forward-compat for
+    /// ADR-009: merchant may extend `cancel` signer policy, but `cleanup`
+    /// stays subscriber-only because rent is a subscriber asset.
+    /// ADR-013 §Q1.
+    #[msg("only the subscription owner can call cleanup")]
+    UnauthorizedCleanup,
 }

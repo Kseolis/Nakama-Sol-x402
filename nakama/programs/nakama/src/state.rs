@@ -60,9 +60,11 @@ pub enum SubscriptionState {
     GracePeriod = 2,
     /// post-MVP: grace timed out; awaiting cleanup. ADR-003.
     Exhausted = 3,
-    /// soft-terminal: settled + refunded. In MVP, fused with cleanup — never
-    /// observable on-chain because the account is closed in the same instruction.
-    /// See ADR-003 §Cancel decomposition.
+    /// soft-terminal: settled + refunded; vault closed; Subscription account
+    /// preserved as tombstone until `cleanup`. Post-ADR-013 split this byte
+    /// **is observable on-chain** (cycle-2 MVP closed the account in the same
+    /// ix; cycle-3 keeps it alive). See ADR-013 §"Cancel handler" and
+    /// ADR-003 §"Cancel decomposition".
     Cancelled = 4,
 }
 
@@ -229,9 +231,11 @@ pub struct SubscriptionStarted {
     pub stream_start: i64,
 }
 
-/// Emitted by `cancel` BEFORE the Subscription account is closed.
-/// Off-chain consumers detect cancellation via this event in MVP because
-/// the on-chain account vanishes the same slot (ADR-003 §Cancel decomposition).
+/// Emitted by `cancel`. Post-ADR-013 split, the Subscription account is
+/// preserved as a tombstone (`state == Cancelled`) until subscriber calls
+/// `cleanup` — off-chain consumers can read `state` directly via
+/// `getProgramAccounts` filter on byte 192, in addition to listening for
+/// this event. ADR-013 §"x402 forward-compat".
 #[event]
 pub struct SubscriptionCancelled {
     pub subscription: Pubkey,
@@ -251,5 +255,15 @@ pub struct SubscriptionCharged {
     pub subscription: Pubkey,
     pub amount: u64,
     pub withdrawn_total: u64,
+    pub timestamp: i64,
+}
+
+/// Emitted by `cleanup` immediately before the Subscription account is closed
+/// (ADR-013 §"Cleanup handler"). Off-chain consumers use this event to update
+/// indexer rows from "pending-cleanup tombstone" to "closed".
+#[event]
+pub struct SubscriptionCleaned {
+    pub subscription: Pubkey,
+    pub rent_returned_to: Pubkey,
     pub timestamp: i64,
 }

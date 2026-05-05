@@ -1,10 +1,12 @@
 //! Instruction module aggregator.
 //!
 //! MVP day 1–7 surface: `create_plan` (ADR-014), `subscribe` (ADR-002),
-//! `charge` (ADR-004), `cancel` (ADR-002).
+//! `charge` (ADR-004), `cancel` (ADR-002 + ADR-013 split).
+//! Cycle-3 addition: `cleanup` (ADR-013).
 
 pub mod cancel;
 pub mod charge;
+pub mod cleanup;
 pub mod create_plan;
 pub mod subscribe;
 
@@ -14,5 +16,6 @@ pub mod subscribe;
 // collision on the bare name `handler`.
 pub use cancel::*;
 pub use charge::*;
+pub use cleanup::*;
 pub use create_plan::*;
 pub use subscribe::*;
