@@ -81,4 +81,30 @@ pub mod nakama {
     pub fn top_up(ctx: Context<TopUp>, amount: u64) -> Result<()> {
         instructions::top_up::top_up_handler(ctx, amount)
     }
+
+    /// ADR-x402-001 — subscriber opens a PaySession satellite for x402
+    /// per-request micropayments. Polymorphic facilitator delegation:
+    /// settle authority is the `facilitator` pubkey passed at open, NOT
+    /// the subscriber's signing key.
+    pub fn open_session(
+        ctx: Context<OpenSession>,
+        session_id: u64,
+        facilitator: Pubkey,
+        reservation_cap: u64,
+    ) -> Result<()> {
+        instructions::open_session::open_session_handler(
+            ctx,
+            session_id,
+            facilitator,
+            reservation_cap,
+        )
+    }
+
+    /// ADR-x402-001 — subscriber closes a PaySession. Anchor `close =
+    /// subscriber` returns rent. NO `parent.state == Active` guard —
+    /// must work from any parent state including Cancelled tombstone
+    /// (R1 closure).
+    pub fn close_session(ctx: Context<CloseSession>) -> Result<()> {
+        instructions::close_session::close_session_handler(ctx)
+    }
 }
