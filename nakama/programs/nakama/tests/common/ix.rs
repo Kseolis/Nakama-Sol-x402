@@ -622,3 +622,43 @@ pub fn close_session_ix(
         data,
     }
 }
+
+const DISC_SETTLE_USAGE: [u8; 8] = [61, 174, 167, 9, 21, 219, 242, 117];
+
+#[derive(BorshSerialize)]
+struct SettleUsageArgs {
+    amount: u64,
+}
+
+/// Build a `settle_usage(amount)` ix.
+///
+/// Wire order (canonical, matches ADR-x402-001 §"settle_usage" Accounts struct):
+///   parent (Subscription mut), pay_session (mut), vault (mut TokenAccount),
+///   merchant_ata (mut TokenAccount), facilitator (Signer), token_program.
+pub fn settle_usage_ix(
+    facilitator: &Pubkey,
+    subscription: &Pubkey,
+    session_id: u64,
+    vault: &Pubkey,
+    merchant_ata: &Pubkey,
+    token_prog: &Pubkey,
+    amount: u64,
+) -> Instruction {
+    let mut data = DISC_SETTLE_USAGE.to_vec();
+    data.extend(borsh::to_vec(&SettleUsageArgs { amount }).expect("borsh settle_usage args"));
+
+    let (pay_session, _) = super::pay_session_pda(subscription, session_id);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false),    // parent (mut for withdrawn_amount)
+            AccountMeta::new(pay_session, false),      // pay_session (mut — usage_amount, state)
+            AccountMeta::new(*vault, false),           // vault (mut, source of CPI)
+            AccountMeta::new(*merchant_ata, false),    // merchant_ata (mut, dest of CPI)
+            AccountMeta::new(*facilitator, true),      // facilitator (Signer)
+            AccountMeta::new_readonly(*token_prog, false),
+        ],
+        data,
+    }
+}
