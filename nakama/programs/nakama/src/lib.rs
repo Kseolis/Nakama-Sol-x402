@@ -107,4 +107,13 @@ pub mod nakama {
     pub fn close_session(ctx: Context<CloseSession>) -> Result<()> {
         instructions::close_session::close_session_handler(ctx)
     }
+
+    /// ADR-x402-001 — facilitator-signed settle of accumulated x402
+    /// micropayment usage. CPI vault → merchant_ata, mutates
+    /// parent.withdrawn_amount (single source of truth — ADR-002).
+    /// Composes with `charge`: both share withdrawn_amount, no
+    /// double-spend (ADR-x402-001 §"Composability with charge").
+    pub fn settle_usage(ctx: Context<SettleUsage>, amount: u64) -> Result<()> {
+        instructions::settle_usage::settle_usage_handler(ctx, amount)
+    }
 }

@@ -13,6 +13,7 @@ pub mod cleanup;
 pub mod close_session;
 pub mod create_plan;
 pub mod open_session;
+pub mod settle_usage;
 pub mod subscribe;
 pub mod top_up;
 
@@ -26,5 +27,6 @@ pub use cleanup::*;
 pub use close_session::*;
 pub use create_plan::*;
 pub use open_session::*;
+pub use settle_usage::*;
 pub use subscribe::*;
 pub use top_up::*;

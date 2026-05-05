@@ -87,13 +87,8 @@ fn settle_usage_fails_with_zero_amount() {
         .expect("airdrop");
 
     let session_id = 1u64;
-    let sub_pk = make_subscription_with_session(
-        &mut env,
-        &actors,
-        &facilitator.pubkey(),
-        session_id,
-        500,
-    );
+    let sub_pk =
+        make_subscription_with_session(&mut env, &actors, &facilitator.pubkey(), session_id, 500);
     let (vault_pk, _) = vault_pda(&sub_pk);
 
     clock::set_clock(&mut env.svm, T0 + 30);
@@ -128,13 +123,8 @@ fn settle_usage_fails_when_signer_is_not_facilitator() {
         .expect("airdrop");
 
     let session_id = 1u64;
-    let sub_pk = make_subscription_with_session(
-        &mut env,
-        &actors,
-        &facilitator.pubkey(),
-        session_id,
-        500,
-    );
+    let sub_pk =
+        make_subscription_with_session(&mut env, &actors, &facilitator.pubkey(), session_id, 500);
     let (vault_pk, _) = vault_pda(&sub_pk);
 
     let attacker = solana_keypair::Keypair::new();
@@ -175,13 +165,8 @@ fn settle_usage_fails_when_reservation_cap_exceeded() {
 
     let session_id = 1u64;
     // cap=100; first settle 80 ok, second settle 30 would exceed (110 > 100)
-    let sub_pk = make_subscription_with_session(
-        &mut env,
-        &actors,
-        &facilitator.pubkey(),
-        session_id,
-        100,
-    );
+    let sub_pk =
+        make_subscription_with_session(&mut env, &actors, &facilitator.pubkey(), session_id, 100);
     let (vault_pk, _) = vault_pda(&sub_pk);
 
     clock::set_clock(&mut env.svm, T0 + 30);
@@ -233,13 +218,9 @@ fn settle_usage_fails_when_amount_exceeds_unlocked() {
         .expect("airdrop");
 
     let session_id = 1u64;
-    let sub_pk = make_subscription_with_session(
-        &mut env,
-        &actors,
-        &facilitator.pubkey(),
-        session_id,
-        99_999, // generous cap
-    );
+    // deposited = 2 × 1200 = 2400; use cap = 2000 (within escrow).
+    let sub_pk =
+        make_subscription_with_session(&mut env, &actors, &facilitator.pubkey(), session_id, 2_000);
     let (vault_pk, _) = vault_pda(&sub_pk);
 
     // After 5 seconds, unlocked = 5 * 20 = 100. Try settle 200.
@@ -283,13 +264,8 @@ fn cross_session_facilitator_cannot_settle_other_session() {
     // session-1 → facilitator_a; session-2 → facilitator_b
     let session_a = 100u64;
     let session_b = 200u64;
-    let sub_pk = make_subscription_with_session(
-        &mut env,
-        &actors,
-        &facilitator_a.pubkey(),
-        session_a,
-        500,
-    );
+    let sub_pk =
+        make_subscription_with_session(&mut env, &actors, &facilitator_a.pubkey(), session_a, 500);
     env.svm.expire_blockhash();
     send_tx(
         &mut env.svm,
