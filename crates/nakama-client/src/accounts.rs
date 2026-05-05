@@ -152,6 +152,41 @@ impl PausedSubscriptionView {
     }
 }
 
+/// Borsh view of `PaySession` (ADR-x402-001 §"PaySession PDA Layout").
+///
+/// Layout (202 bytes Borsh, 210 with 8-byte discriminator):
+///   subscription(32) + merchant(32) + merchant_ata(32) + facilitator(32)
+///   + session_id(8) + opened_at(8) + last_settle_at(8) + usage_amount(8)
+///   + reservation_cap(8) + state(1) + bump(1) + reserved(32)
+///
+/// `state` is held as the raw byte (matching `PaySessionState`
+/// discriminants 0=Open / 1=Settling / 2=Closed). We do NOT decode into the
+/// enum because `Settling` should never persist post-tx — observed-on-disk
+/// Settling indicates a stuck state needing R3 force_close recovery, and
+/// we'd rather surface that to callers than silently coerce.
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct PaySessionView {
+    pub subscription: Pubkey,
+    pub merchant: Pubkey,
+    pub merchant_ata: Pubkey,
+    pub facilitator: Pubkey,
+    pub session_id: u64,
+    pub opened_at: i64,
+    pub last_settle_at: i64,
+    pub usage_amount: u64,
+    pub reservation_cap: u64,
+    pub state: u8,
+    pub bump: u8,
+    pub reserved: [u8; 32],
+}
+
+impl PaySessionView {
+    pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
+        let body = strip_discriminator(data)?;
+        Ok(Self::try_from_slice(body)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -24,6 +24,8 @@ export const PLAN_SEED = Buffer.from("plan");
 export const SUB_SEED = Buffer.from("sub");
 export const VAULT_SEED = Buffer.from("vault");
 export const GRACE_SEED = Buffer.from("grace");
+/** ADR-x402-001 §"PaySession PDA Layout" — `b"pay_session"`. */
+export const PAY_SESSION_SEED = Buffer.from("pay_session");
 
 /** ADR-007: 7 days, hardcoded — no per-Plan override (rejected alt (f)). */
 export const GRACE_DURATION_SECONDS = 7 * 24 * 60 * 60;
@@ -113,6 +115,33 @@ export function deriveGracedSubscriptionPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [GRACE_SEED, subscription.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * Derive the PaySession satellite PDA (ADR-x402-001).
+ *
+ * Seeds: `[PAY_SESSION_SEED, subscription.key().as_ref(), &session_id.to_le_bytes()]`.
+ *
+ * Q1 (ADR-x402-001): N concurrent sessions per Subscription via u64 nonce.
+ * Subscriber is responsible for choosing a non-colliding session_id;
+ * Anchor `init` on duplicate seeds returns `AccountAlreadyInUse`.
+ *
+ * @example
+ * ```ts
+ * const [paySessionPda] = derivePaySessionPda(programId, subPda, new BN(42));
+ * ```
+ */
+export function derivePaySessionPda(
+  programId: PublicKey,
+  subscription: PublicKey,
+  sessionId: BN,
+): [PublicKey, number] {
+  // u64 little-endian, 8 bytes — must match Rust `session_id.to_le_bytes()`.
+  const sessionIdLe = sessionId.toArrayLike(Buffer, "le", 8);
+  return PublicKey.findProgramAddressSync(
+    [PAY_SESSION_SEED, subscription.toBuffer(), sessionIdLe],
     programId,
   );
 }

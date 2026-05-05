@@ -5,7 +5,7 @@
 
 use solana_pubkey::Pubkey;
 
-use crate::constants::{GRACE_SEED, SUB_SEED, VAULT_SEED};
+use crate::constants::{GRACE_SEED, PAY_SESSION_SEED, SUB_SEED, VAULT_SEED};
 
 /// Derive the Subscription PDA — `[SUB_SEED, subscriber, plan]`.
 /// See ADR-001 §Subscription account.
@@ -26,6 +26,24 @@ pub fn derive_vault_pda(program_id: &Pubkey, subscription: &Pubkey) -> (Pubkey, 
 /// ADR-007 §"Storage decision"; I-GRACE-1.
 pub fn derive_grace_pda(program_id: &Pubkey, subscription: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[GRACE_SEED, subscription.as_ref()], program_id)
+}
+
+/// Derive the PaySession satellite PDA —
+/// `[PAY_SESSION_SEED, subscription, session_id_le]`. ADR-x402-001
+/// §"PaySession PDA Layout" (Q2 — u64 nonce client-gen).
+pub fn derive_pay_session_pda(
+    program_id: &Pubkey,
+    subscription: &Pubkey,
+    session_id: u64,
+) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            PAY_SESSION_SEED,
+            subscription.as_ref(),
+            &session_id.to_le_bytes(),
+        ],
+        program_id,
+    )
 }
 
 #[cfg(test)]

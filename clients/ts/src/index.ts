@@ -11,11 +11,13 @@ export {
   SUB_SEED,
   VAULT_SEED,
   GRACE_SEED,
+  PAY_SESSION_SEED,
   GRACE_DURATION_SECONDS,
   derivePlanPda,
   deriveSubscriptionPda,
   deriveVaultPda,
   deriveGracedSubscriptionPda,
+  derivePaySessionPda,
 } from "./pdas";
 
 export {
@@ -36,6 +38,21 @@ export {
   buildCancelIx,
   type BuildCancelIxArgs,
 } from "./instructions/cancel";
+
+export {
+  buildOpenSessionIx,
+  type BuildOpenSessionIxArgs,
+} from "./instructions/openSession";
+
+export {
+  buildSettleUsageIx,
+  type BuildSettleUsageIxArgs,
+} from "./instructions/settleUsage";
+
+export {
+  buildCloseSessionIx,
+  type BuildCloseSessionIxArgs,
+} from "./instructions/closeSession";
 
 export {
   deriveStatus,

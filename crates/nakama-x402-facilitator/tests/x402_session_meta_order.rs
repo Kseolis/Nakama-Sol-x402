@@ -52,12 +52,8 @@ fn open_session_meta_order_canonical() {
     // ADR-x402-001 §"open_session" Accounts:
     //   parent, pay_session, subscriber (Signer mut), system_program
     let k = keys();
-    let metas = build_open_session_metas(
-        &k.parent,
-        &k.pay_session,
-        &k.subscriber,
-        &k.system_program,
-    );
+    let metas =
+        build_open_session_metas(&k.parent, &k.pay_session, &k.subscriber, &k.system_program);
     assert_eq!(metas.len(), 4, "open_session has 4 accounts");
 
     // Slot 0: parent (Subscription PDA — read-only for handler signer guard
@@ -118,10 +114,7 @@ fn settle_usage_meta_order_canonical() {
 
     assert_eq!(metas[4].pubkey, k.facilitator);
     assert!(metas[4].is_signer, "facilitator must be signer");
-    assert!(
-        !metas[4].is_writable,
-        "facilitator non-mut (no rent payer)"
-    );
+    assert!(!metas[4].is_writable, "facilitator non-mut (no rent payer)");
 
     assert_eq!(metas[5].pubkey, k.token_program);
     assert!(!metas[5].is_signer);

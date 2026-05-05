@@ -2,7 +2,10 @@
 //!
 //! One file per endpoint family; the router in `lib.rs` wires routes.
 
+pub mod close_session;
 pub mod computed_status;
+pub mod open_session;
+pub mod settle_usage;
 pub mod top_up;
 
 use axum::http::StatusCode;
