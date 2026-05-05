@@ -21,6 +21,16 @@ pub const SUB_SEED: &[u8] = b"sub";
 /// See ADR-002 §Account model and authority.
 pub const VAULT_SEED: &[u8] = b"vault";
 
+/// PDA seed for the `GracedSubscription` satellite account.
+/// Seeds: `[GRACE_SEED, subscription.key().as_ref()]`.
+/// See ADR-007 §"Storage decision".
+pub const GRACE_SEED: &[u8] = b"grace";
+
+/// Grace period duration: 7 days in seconds.
+/// See ADR-007 §Decision (`GRACE_DURATION = 7 * 24 * 60 * 60`).
+/// Hardcoded — no per-Plan override (rejected alternative (f); ADR-007 §Open Q1).
+pub const GRACE_DURATION: i64 = 7 * 24 * 60 * 60;
+
 // Forward-compat seed namespaces reserved for x402 layer (day 8 GO).
 // Documented here so anchor-engineer / sdk-engineer share a single source of truth.
 // pub const PAY_SESSION_SEED: &[u8] = b"pay_session";

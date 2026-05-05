@@ -44,6 +44,13 @@ pub enum NakamaError {
     // declaration order in `programs/nakama/src/error.rs` (after VaultOwnerMismatch).
     IllegalStateForCleanup = 14,
     UnauthorizedCleanup = 15,
+    // ADR-007 §"Error enum additions" — top_up + grace satellite variants.
+    // Indices follow declaration order in `programs/nakama/src/error.rs`
+    // (after UnauthorizedCleanup); cross-checked against
+    // `target/idl/nakama.json` (codes 6016/6017/6018) on 2026-05-05.
+    IllegalStateForTopUp = 16,
+    IllegalAmountForTopUp = 17,
+    MissingGraceSatellite = 18,
 }
 
 impl NakamaError {

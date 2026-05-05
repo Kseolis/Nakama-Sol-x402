@@ -30,7 +30,11 @@ const PLAN_PERIOD: i64 = 60;
 fn create_and_subscribe(
     env: &mut common::TestEnv,
     actors: &common::Actors,
-) -> (solana_pubkey::Pubkey, solana_pubkey::Pubkey, solana_pubkey::Pubkey) {
+) -> (
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+) {
     let plan_id = 1u64;
     send_tx(
         &mut env.svm,

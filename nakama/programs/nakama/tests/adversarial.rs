@@ -234,8 +234,9 @@ fn token_2022_mint_reject_in_create_plan() {
     let actors = fund_actors(&mut env, 0);
 
     // Construct a Token-2022 program id and an account "owned" by it.
-    let token_2022_id: solana_pubkey::Pubkey =
-        "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".parse().unwrap();
+    let token_2022_id: solana_pubkey::Pubkey = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        .parse()
+        .unwrap();
 
     let foreign_mint = solana_keypair::Keypair::new().pubkey();
     // We pre-pack a classic Mint into the data, but place ownership under

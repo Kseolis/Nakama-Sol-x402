@@ -123,14 +123,13 @@ fn subscribe_with_wrong_mint_ata_rejected() {
 
     // Plant a foreign mint and a TokenAccount on that mint owned by subscriber.
     let foreign_mint = solana_keypair::Keypair::new().pubkey();
-    common::install_mint(
+    common::install_mint(&mut env.svm, &foreign_mint, &env.mint_authority.pubkey(), 6);
+    let bad_subscriber_ata = common::install_funded_ata(
         &mut env.svm,
+        &actors.subscriber.pubkey(),
         &foreign_mint,
-        &env.mint_authority.pubkey(),
-        6,
+        50_000_000,
     );
-    let bad_subscriber_ata =
-        common::install_funded_ata(&mut env.svm, &actors.subscriber.pubkey(), &foreign_mint, 50_000_000);
 
     let result = send_tx(
         &mut env.svm,

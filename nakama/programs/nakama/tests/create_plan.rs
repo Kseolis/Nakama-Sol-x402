@@ -20,7 +20,7 @@ fn happy_path_creates_plan_pda() {
 
     let plan_id = 1u64;
     let price = 5_000_000u64; // 5 USDC
-    let period = 60i64;        // 60s — short demo period
+    let period = 60i64; // 60s — short demo period
 
     let ix = ix::create_plan_ix(
         &actors.merchant.pubkey(),
@@ -30,12 +30,7 @@ fn happy_path_creates_plan_pda() {
         period,
     );
 
-    let result = send_tx(
-        &mut env.svm,
-        &actors.merchant,
-        &[ix],
-        &[&actors.merchant],
-    );
+    let result = send_tx(&mut env.svm, &actors.merchant, &[ix], &[&actors.merchant]);
     result.expect("create_plan should succeed");
 
     // Plan PDA exists and has the expected size (ADR-001 §Plan account: 161 on chain).
@@ -69,12 +64,7 @@ fn zero_period_rejected() {
         5_000_000,
         0, // ZeroPeriod
     );
-    let result = send_tx(
-        &mut env.svm,
-        &actors.merchant,
-        &[ix],
-        &[&actors.merchant],
-    );
+    let result = send_tx(&mut env.svm, &actors.merchant, &[ix], &[&actors.merchant]);
     assert_nakama_err::<()>(result, NakamaError::ZeroPeriod);
 }
 
@@ -91,11 +81,6 @@ fn zero_price_rejected() {
         0, // ZeroPrice
         60,
     );
-    let result = send_tx(
-        &mut env.svm,
-        &actors.merchant,
-        &[ix],
-        &[&actors.merchant],
-    );
+    let result = send_tx(&mut env.svm, &actors.merchant, &[ix], &[&actors.merchant]);
     assert_nakama_err::<()>(result, NakamaError::ZeroPrice);
 }

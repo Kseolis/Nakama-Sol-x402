@@ -1,0 +1,82 @@
+#
+# Off-chain Rust workspace for Nakama Protocol.
+#
+# Scope (ADR-007 stage-2): keeper bot, x402 HTTP facilitator, typed client.
+# The on-chain Anchor workspace lives under `nakama/` and has its own
+# `[workspace]` declaration; Cargo allows nested workspaces because no member
+# overlaps. Verified: `nakama/Cargo.toml` declares `members = ["programs/*"]`.
+#
+# Source-of-truth pins follow `.claude/rules/source-of-truth.md`. Solana SDK
+# v3 granular crates are pinned to the same minor as the on-chain dev-deps in
+# `nakama/programs/nakama/Cargo.toml` (3.0.x family) so transitive types match.
+#
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.81"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Solana SDK v3 — granular crates per ADR / source-of-truth rule. We use
+# compatible-version specs (`^3`) rather than `=` pins because the SDK
+# crates evolve in lockstep and `solana-rpc-client 3.1.x` requires
+# `solana-hash ^3.1`, etc. Resolver picks the highest 3.x compatible set.
+# Off-chain test harness uses the same major; binary layout matches.
+# Solana SDK v3.1.x — coherent set pulled by `solana-rpc-client 3.1`.
+# Verified via `cargo tree -p solana-rpc-client`:
+#   message=3.1.0, transaction=3.1.0, instruction=3.4.0, pubkey=3.0.0,
+#   account=3.4.0, hash=3.1.0, commitment-config=3.1.1.
+# We declare loose `^3.0` and let the resolver lift to whatever rpc-client
+# pulls. solana-pubkey gets explicit features (curve25519 for off-chain PDA
+# derivation, borsh for #[derive(BorshDeserialize)] on Pubkey-bearing types).
+solana-pubkey = { version = "3", features = ["curve25519", "borsh"] }
+solana-keypair = "3"
+solana-signer = "3"
+solana-instruction = "3"
+solana-message = "3"
+solana-transaction = "3"
+solana-hash = "3"
+solana-system-interface = "1"
+solana-account = "3"
+solana-commitment-config = "3"
+solana-compute-budget-interface = "3"
+
+# RPC client. 3.1.x is the matching minor for SDK 3.x.
+solana-rpc-client = "3.1"
+solana-rpc-client-api = "3.1"
+
+# SPL Token classic (Token-2022 explicitly rejected per ADR-014).
+spl-token = "=9.0.0"
+spl-associated-token-account = "=8.0.0"
+
+# Borsh — on-chain layout decoder. Must match Anchor 1.0.1 bundled minor.
+borsh = "1.5"
+
+# Anchor instruction discriminator = sha256("global:<ix_name>")[..8]. We
+# compute these once at startup (lazy static) rather than pulling in
+# `anchor-client`, which drags the full Solana program-runtime dep graph.
+sha2 = "0.10"
+
+# HTTP harness.
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Errors / observability.
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Serde stack for HTTP I/O.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bs58 = "0.5"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+overflow-checks = true

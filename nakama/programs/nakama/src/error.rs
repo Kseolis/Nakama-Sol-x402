@@ -115,4 +115,23 @@ pub enum NakamaError {
     /// ADR-013 §Q1.
     #[msg("only the subscription owner can call cleanup")]
     UnauthorizedCleanup,
+
+    /// FSM guard: `top_up` legal only from `{Active, Paused, GracePeriod}`.
+    /// Reject from `Cancelled` / `Exhausted` (terminal). ADR-007 §"Per-state
+    /// eligibility table" + §I-TOPUP-3.
+    #[msg("Top-up not allowed in current subscription state")]
+    IllegalStateForTopUp,
+
+    /// `top_up(amount)` with `amount == 0` is rejected — the CPI would no-op
+    /// while still emitting an event and (in absence of guard) consuming CU.
+    /// ADR-007 §Adversarial 2.
+    #[msg("Top-up amount must be greater than zero")]
+    IllegalAmountForTopUp,
+
+    /// State byte says `GracePeriod` but caller did not provide the
+    /// `GracedSubscription` satellite account. Reachable from both `top_up`
+    /// (recovery branch) and `cancel` (effective_now branch from grace).
+    /// ADR-007 §"top_up handler" + §"cancel from GracePeriod".
+    #[msg("GracePeriod state requires GracedSubscription account")]
+    MissingGraceSatellite,
 }

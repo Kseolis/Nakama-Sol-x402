@@ -14,7 +14,7 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
 use super::{
-    plan_pda, program_id, subscription_pda, token_program_id, usdc_mint, vault_pda,
+    grace_pda, plan_pda, program_id, subscription_pda, token_program_id, usdc_mint, vault_pda,
 };
 
 // IDL-pinned discriminators (8 bytes each).
@@ -28,6 +28,10 @@ const DISC_CHARGE: [u8; 8] = [26, 55, 197, 209, 93, 77, 242, 15];
 // `target/idl/nakama.json` (instruction "cleanup".discriminator) on
 // 2026-05-04 after the handler landed.
 const DISC_CLEANUP: [u8; 8] = [36, 158, 31, 187, 253, 37, 68, 210];
+// `top_up` discriminator (ADR-007 cycle-4): cross-checked against
+// `target/idl/nakama.json` (instruction "top_up".discriminator) on
+// 2026-05-05 after the handler landed.
+const DISC_TOP_UP: [u8; 8] = [236, 225, 96, 9, 60, 106, 77, 208];
 
 // System program id (literal-encoded so we don't pull in solana-sdk-ids).
 fn system_program_id() -> Pubkey {
@@ -35,7 +39,9 @@ fn system_program_id() -> Pubkey {
 }
 
 fn rent_sysvar_id() -> Pubkey {
-    "SysvarRent111111111111111111111111111111111".parse().unwrap()
+    "SysvarRent111111111111111111111111111111111"
+        .parse()
+        .unwrap()
 }
 
 // -- create_plan -----------------------------------------------------------
@@ -70,10 +76,10 @@ pub fn create_plan_ix(
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*merchant, true),                  // merchant signer
-            AccountMeta::new(plan, false),                      // plan PDA (init)
-            AccountMeta::new_readonly(usdc_mint(), false),      // token_mint
-            AccountMeta::new_readonly(*merchant_ata, false),    // merchant_ata
+            AccountMeta::new(*merchant, true),               // merchant signer
+            AccountMeta::new(plan, false),                   // plan PDA (init)
+            AccountMeta::new_readonly(usdc_mint(), false),   // token_mint
+            AccountMeta::new_readonly(*merchant_ata, false), // merchant_ata
             AccountMeta::new_readonly(token_program_id(), false),
             AccountMeta::new_readonly(system_program_id(), false),
         ],
@@ -153,7 +159,8 @@ pub fn subscribe_ix_with_overrides(
     subscription_override: Option<Pubkey>,
     vault_override: Option<Pubkey>,
 ) -> Instruction {
-    let subscription = subscription_override.unwrap_or_else(|| subscription_pda(subscriber, plan).0);
+    let subscription =
+        subscription_override.unwrap_or_else(|| subscription_pda(subscriber, plan).0);
     let vault = vault_override.unwrap_or_else(|| vault_pda(&subscription).0);
 
     let mut data = DISC_SUBSCRIBE.to_vec();
@@ -162,12 +169,12 @@ pub fn subscribe_ix_with_overrides(
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*subscriber, true),                // subscriber signer
-            AccountMeta::new_readonly(*plan, false),            // plan
-            AccountMeta::new_readonly(*token_mint, false),      // token_mint
-            AccountMeta::new(subscription, false),              // subscription PDA (init)
-            AccountMeta::new(vault, false),                     // vault PDA (init)
-            AccountMeta::new(*subscriber_ata, false),           // subscriber_ata (mut)
+            AccountMeta::new(*subscriber, true),     // subscriber signer
+            AccountMeta::new_readonly(*plan, false), // plan
+            AccountMeta::new_readonly(*token_mint, false), // token_mint
+            AccountMeta::new(subscription, false),   // subscription PDA (init)
+            AccountMeta::new(vault, false),          // vault PDA (init)
+            AccountMeta::new(*subscriber_ata, false), // subscriber_ata (mut)
             AccountMeta::new_readonly(token_program_id(), false),
             AccountMeta::new_readonly(system_program_id(), false),
             AccountMeta::new_readonly(rent_sysvar_id(), false),
@@ -202,6 +209,13 @@ pub fn charge_ix(
 
 /// Power version: lets adversarial tests substitute the token program id
 /// (Token-2022 reject, ADR-004 §6).
+///
+/// `graced_subscription` defaults to the `program_id` placeholder, which
+/// Anchor 1.0.1 (with the `allow-missing-optionals` feature, see
+/// `programs/nakama/Cargo.toml`) interprets as `Option::None`. This is the
+/// correct shape for charges that do NOT exhaust the stream — the post-CPI
+/// math leaves `withdrawn_amount < deposited_amount` and the §I-CHARGE-1
+/// tail does not fire. ADR-007 §"Source-of-truth verification" Q9.
 pub fn charge_ix_with_overrides(
     subscription: &Pubkey,
     plan: &Pubkey,
@@ -210,17 +224,59 @@ pub fn charge_ix_with_overrides(
     payer: &Pubkey,
     token_prog: &Pubkey,
 ) -> Instruction {
+    charge_ix_full(
+        subscription,
+        plan,
+        vault,
+        merchant_ata,
+        payer,
+        token_prog,
+        /* graced_subscription = */ None,
+    )
+}
+
+/// Full version: explicit `graced_subscription` for ADR-007 charge-tail tests.
+///
+/// `graced_subscription = Some(pda)` makes Anchor treat the optional slot as
+/// `Option::Some` and run the `init` constraint when the post-CPI math flips
+/// the stream into GracePeriod (§I-CHARGE-1). `None` plants the `program_id`
+/// placeholder, signalling absence.
+///
+/// Order MUST stay aligned with IDL `instructions[].accounts` (verified
+/// 2026-05-05 against `target/idl/nakama.json`):
+///   subscription, plan, vault, merchant_ata, token_program, payer,
+///   graced_subscription, system_program.
+pub fn charge_ix_full(
+    subscription: &Pubkey,
+    plan: &Pubkey,
+    vault: &Pubkey,
+    merchant_ata: &Pubkey,
+    payer: &Pubkey,
+    token_prog: &Pubkey,
+    graced_subscription: Option<Pubkey>,
+) -> Instruction {
     let data = DISC_CHARGE.to_vec();
+
+    // Optional-account placeholder convention: `program_id` of the executing
+    // program signals `Option::None` to Anchor codegen. Marking it
+    // `new_readonly` (and matching `writable=false`) is benign because Anchor
+    // skips constraint evaluation entirely for the None case.
+    let graced_meta = match graced_subscription {
+        Some(pda) => AccountMeta::new(pda, false),
+        None => AccountMeta::new_readonly(program_id(), false),
+    };
 
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*subscription, false),         // subscription PDA (mut)
-            AccountMeta::new_readonly(*plan, false),        // plan (read-only, has_one target)
-            AccountMeta::new(*vault, false),                // vault (mut, source of CPI)
-            AccountMeta::new(*merchant_ata, false),         // merchant_ata (mut, dest)
-            AccountMeta::new_readonly(*token_prog, false),  // token_program
-            AccountMeta::new(*payer, true),                 // payer signer (any pubkey)
+            AccountMeta::new(*subscription, false), // subscription PDA (mut)
+            AccountMeta::new_readonly(*plan, false), // plan (read-only, has_one target)
+            AccountMeta::new(*vault, false),        // vault (mut, source of CPI)
+            AccountMeta::new(*merchant_ata, false), // merchant_ata (mut, dest)
+            AccountMeta::new_readonly(*token_prog, false), // token_program
+            AccountMeta::new(*payer, true),         // payer signer (any pubkey)
+            graced_meta,                            // graced_subscription (Option)
+            AccountMeta::new_readonly(system_program_id(), false), // system_program
         ],
         data,
     }
@@ -234,13 +290,7 @@ pub fn cancel_ix(
     merchant_ata: &Pubkey,
     subscriber_ata: &Pubkey,
 ) -> Instruction {
-    cancel_ix_with_overrides(
-        subscriber,
-        subscription,
-        None,
-        merchant_ata,
-        subscriber_ata,
-    )
+    cancel_ix_with_overrides(subscriber, subscription, None, merchant_ata, subscriber_ata)
 }
 
 // -- cleanup ---------------------------------------------------------------
@@ -259,6 +309,106 @@ pub fn cleanup_ix(subscriber: &Pubkey, subscription: &Pubkey) -> Instruction {
 /// will compare it against `subscription.subscriber` and raise
 /// `NakamaError::UnauthorizedCleanup` (or Anchor `ConstraintHasOne` if the
 /// declarative path fires first; the test accepts either).
+// -- top_up (ADR-007) ------------------------------------------------------
+
+#[derive(BorshSerialize)]
+struct TopUpArgs {
+    amount: u64,
+}
+
+/// Build a `top_up` ix following ADR-007 §"top_up handler" Accounts struct.
+///
+/// IDL order (verified 2026-05-05 against `target/idl/nakama.json`):
+///   subscriber (signer), subscription, graced_subscription (optional, mid),
+///   vault, subscriber_ata, token_program.
+///
+/// Default behavior: signals `Option::None` for `graced_subscription` by
+/// planting `program_id` as the placeholder pubkey (Anchor 1.0.1 +
+/// `allow-missing-optionals` convention — the satellite is NOT trailing in
+/// the `top_up` Accounts struct, so the account meta cannot be omitted; the
+/// program_id placeholder is the documented signal for absent optional).
+/// Suitable for top_up from Active/Paused where the satellite does not
+/// exist on chain.
+///
+/// For top_up from GracePeriod, the caller MUST use `top_up_ix_with_grace`
+/// to pass the inited satellite PDA explicitly.
+pub fn top_up_ix(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    subscriber_ata: &Pubkey,
+    amount: u64,
+) -> Instruction {
+    let (vault, _) = vault_pda(subscription);
+    top_up_ix_full(
+        subscriber,
+        subscription,
+        /* graced_subscription = */ None,
+        &vault,
+        subscriber_ata,
+        &token_program_id(),
+        amount,
+    )
+}
+
+/// Variant for top_up from GracePeriod — passes the satellite PDA so Anchor
+/// runs the `close = subscriber` constraint (rent → subscriber, ADR-007
+/// §I-GRACE-3). Use when the on-chain `Subscription.state == GracePeriod`.
+pub fn top_up_ix_with_grace(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    subscriber_ata: &Pubkey,
+    amount: u64,
+) -> Instruction {
+    let (vault, _) = vault_pda(subscription);
+    let (graced, _) = grace_pda(subscription);
+    top_up_ix_full(
+        subscriber,
+        subscription,
+        Some(graced),
+        &vault,
+        subscriber_ata,
+        &token_program_id(),
+        amount,
+    )
+}
+
+/// Full version: explicit `graced_subscription` + `vault` + `token_program`
+/// for adversarial tests (wrong PDA, wrong token program, missing satellite).
+///
+/// `graced_subscription = Some(pda)` writes the explicit address;
+/// `None` plants `program_id` placeholder so Anchor reads it as
+/// `Option::None`. ADR-007 §"top_up handler".
+pub fn top_up_ix_full(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    graced_subscription: Option<Pubkey>,
+    vault: &Pubkey,
+    subscriber_ata: &Pubkey,
+    token_prog: &Pubkey,
+    amount: u64,
+) -> Instruction {
+    let mut data = DISC_TOP_UP.to_vec();
+    data.extend(borsh::to_vec(&TopUpArgs { amount }).expect("borsh top_up args"));
+
+    let graced_meta = match graced_subscription {
+        Some(pda) => AccountMeta::new(pda, false),
+        None => AccountMeta::new_readonly(program_id(), false),
+    };
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscriber, true),    // subscriber signer (mut)
+            AccountMeta::new(*subscription, false), // subscription PDA (mut)
+            graced_meta,                            // graced_subscription (Option)
+            AccountMeta::new(*vault, false),        // vault (mut, CPI dest)
+            AccountMeta::new(*subscriber_ata, false), // subscriber_ata (mut, CPI src)
+            AccountMeta::new_readonly(*token_prog, false), // token_program
+        ],
+        data,
+    }
+}
+
 pub fn cleanup_ix_with_signer(
     _subscriber_snapshot: &Pubkey,
     subscription: &Pubkey,
@@ -282,19 +432,55 @@ pub fn cancel_ix_with_overrides(
     merchant_ata: &Pubkey,
     subscriber_ata: &Pubkey,
 ) -> Instruction {
+    cancel_ix_full(
+        subscriber,
+        subscription,
+        vault_override,
+        merchant_ata,
+        subscriber_ata,
+        /* graced_subscription = */ None,
+    )
+}
+
+/// Full version: explicit `graced_subscription` for ADR-007 cancel-from-Grace
+/// tests.
+///
+/// IDL order (verified 2026-05-05 against `target/idl/nakama.json`):
+///   subscriber, subscription, vault, merchant_ata, subscriber_ata,
+///   token_program, graced_subscription (optional, trailing).
+///
+/// Trailing-optional convention: `Some(pda)` makes Anchor run the
+/// `close = subscriber` constraint on the satellite, returning rent to the
+/// subscriber (ADR-007 §I-CANCEL-2). `None` plants the `program_id`
+/// placeholder, which Anchor + `allow-missing-optionals` interprets as
+/// `Option::None` so no satellite operations run (cancel-from-Active path).
+pub fn cancel_ix_full(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    vault_override: Option<Pubkey>,
+    merchant_ata: &Pubkey,
+    subscriber_ata: &Pubkey,
+    graced_subscription: Option<Pubkey>,
+) -> Instruction {
     let vault = vault_override.unwrap_or_else(|| vault_pda(subscription).0);
 
     let data = DISC_CANCEL.to_vec();
 
+    let graced_meta = match graced_subscription {
+        Some(pda) => AccountMeta::new(pda, false),
+        None => AccountMeta::new_readonly(program_id(), false),
+    };
+
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*subscriber, true),                // subscriber signer
-            AccountMeta::new(*subscription, false),             // subscription PDA (closed at end)
-            AccountMeta::new(vault, false),                     // vault PDA (closed)
-            AccountMeta::new(*merchant_ata, false),             // merchant_ata (settle dest)
-            AccountMeta::new(*subscriber_ata, false),           // subscriber_ata (refund dest)
+            AccountMeta::new(*subscriber, true),      // subscriber signer
+            AccountMeta::new(*subscription, false),   // subscription PDA (preserved)
+            AccountMeta::new(vault, false),           // vault PDA (closed via SPL CPI)
+            AccountMeta::new(*merchant_ata, false),   // merchant_ata (settle dest)
+            AccountMeta::new(*subscriber_ata, false), // subscriber_ata (refund dest)
             AccountMeta::new_readonly(token_program_id(), false),
+            graced_meta, // graced_subscription (Option)
         ],
         data,
     }

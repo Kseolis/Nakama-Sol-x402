@@ -26,7 +26,11 @@ fn create_and_subscribe_plan(
     env: &mut common::TestEnv,
     actors: &common::Actors,
     plan_id: u64,
-) -> (solana_pubkey::Pubkey, solana_pubkey::Pubkey, solana_pubkey::Pubkey) {
+) -> (
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+) {
     send_tx(
         &mut env.svm,
         &actors.merchant,
@@ -184,8 +188,9 @@ fn token_2022_program_id_rejected() {
     let keeper = fresh_keeper(&mut env);
 
     // Token-2022 program id (mainnet & devnet identical).
-    let token_2022_id: solana_pubkey::Pubkey =
-        "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb".parse().unwrap();
+    let token_2022_id: solana_pubkey::Pubkey = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        .parse()
+        .unwrap();
 
     let result = send_tx(
         &mut env.svm,

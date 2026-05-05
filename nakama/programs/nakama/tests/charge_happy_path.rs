@@ -31,7 +31,11 @@ const RATE: u64 = 10; // = price / period
 fn create_and_subscribe(
     env: &mut common::TestEnv,
     actors: &common::Actors,
-) -> (solana_pubkey::Pubkey, solana_pubkey::Pubkey, solana_pubkey::Pubkey) {
+) -> (
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
+) {
     let plan_id = 1u64;
     send_tx(
         &mut env.svm,
@@ -125,7 +129,8 @@ fn charge_at_period_boundary_succeeds() {
     // MVP `charge` (GracePeriod hook is commented out).
     let sub_acct = env.svm.get_account(&sub_pk).expect("subscription alive");
     assert_eq!(
-        sub_acct.data[common::STATE_OFFSET], 0,
+        sub_acct.data[common::STATE_OFFSET],
+        0,
         "state must remain Active after a partial-unlock charge"
     );
 }
@@ -179,6 +184,14 @@ fn charge_mid_period_settles_streaming_math() {
 /// across a full period each transfer one period's worth; cumulative
 /// settled = 2 * price. Also exercises ADR-004 §7 (row 1 absence-of-
 /// double-spend through monotonic guard, not period-discrete guard).
+///
+/// **ADR-007 cycle-4 update.** The second charge here lands at exactly
+/// `T0 + 2 * PLAN_PERIOD` with a 2-period prefund — `withdrawn_amount ==
+/// deposited_amount` after settlement, which fires the §I-CHARGE-1
+/// auto-transition into GracePeriod. The keeper MUST therefore pre-derive
+/// the `GracedSubscription` PDA and pass it via `charge_ix_full`. We add a
+/// state-byte check to pin the new behavior. The cumulative-settle math
+/// asserted at the bottom is unchanged.
 #[test]
 fn two_consecutive_charges_advance_withdrawn() {
     let mut env = setup();
@@ -211,21 +224,35 @@ fn two_consecutive_charges_advance_withdrawn() {
     // Expire blockhash so second tx isn't deduped as AlreadyProcessed.
     env.svm.expire_blockhash();
 
-    // Second charge at t = T0 + 2*period — incremental claimable = 600 again.
+    // Second charge at t = T0 + 2*period — fully exhausts the stream
+    // (`withdrawn_amount == deposited_amount`). ADR-007 §I-CHARGE-1 makes
+    // this the auto-transition into GracePeriod, so the keeper passes the
+    // GracedSubscription PDA explicitly via `charge_ix_full`.
     clock::set_clock(&mut env.svm, T0 + 2 * PLAN_PERIOD);
+    let (graced_pk, _) = common::grace_pda(&sub_pk);
     send_tx(
         &mut env.svm,
         &keeper,
-        &[ix::charge_ix(
+        &[ix::charge_ix_full(
             &sub_pk,
             &plan_pk,
             &vault_pk,
             &actors.merchant_ata,
             &keeper.pubkey(),
+            &common::token_program_id(),
+            Some(graced_pk),
         )],
         &[&keeper],
     )
-    .expect("second charge");
+    .expect("second charge (auto-grace)");
+
+    // ADR-007 §I-CHARGE-1: state byte flipped to GracePeriod (= 2).
+    let sub_acct = env.svm.get_account(&sub_pk).expect("subscription alive");
+    assert_eq!(
+        sub_acct.data[common::STATE_OFFSET],
+        2,
+        "ADR-007: exhausting charge must flip state to GracePeriod (=2)"
+    );
 
     // Cumulative settle = 2 * price = 1200. Vault drained to 0.
     let merchant_delta = token_balance(&env.svm, &actors.merchant_ata) - pre_merchant;

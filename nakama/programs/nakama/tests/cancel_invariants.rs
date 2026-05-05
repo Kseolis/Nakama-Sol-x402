@@ -19,7 +19,10 @@ use common::{
     fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer,
 };
 
-fn create_plan_and_subscribe(env: &mut common::TestEnv, actors: &common::Actors) -> (solana_pubkey::Pubkey, solana_pubkey::Pubkey) {
+fn create_plan_and_subscribe(
+    env: &mut common::TestEnv,
+    actors: &common::Actors,
+) -> (solana_pubkey::Pubkey, solana_pubkey::Pubkey) {
     let plan_id = 1u64;
     let price = 600u64;
     let period = 60i64;

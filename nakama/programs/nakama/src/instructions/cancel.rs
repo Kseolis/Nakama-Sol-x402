@@ -24,9 +24,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
 
-use crate::constants::{SUB_SEED, VAULT_SEED};
+use crate::constants::{GRACE_SEED, SUB_SEED, VAULT_SEED};
 use crate::error::NakamaError;
-use crate::state::{Subscription, SubscriptionCancelled, SubscriptionState};
+use crate::state::{GracedSubscription, Subscription, SubscriptionCancelled, SubscriptionState};
 
 /// Account validation per ADR-002 §cancel signer policy (BLK-08).
 #[derive(Accounts)]
@@ -51,7 +51,10 @@ pub struct Cancel<'info> {
 
     /// Per-subscription vault. Closed via explicit SPL CPI (BLK-15) after
     /// final settle + refund. authority = subscription PDA, signer-seeds
-    /// derived from stored `vault_bump` (BLK-03).
+    /// derived from stored `vault_bump` (BLK-03). Boxed to keep the
+    /// `Cancel::try_accounts` stack frame under the sBPF 4 KiB cap; ADR-007
+    /// added an `Option<Account<GracedSubscription>>` slot which pushed the
+    /// frame to ~4224 B (anchor-lang-1.0.1/src/accounts/boxed.rs).
     #[account(
         mut,
         seeds = [VAULT_SEED, subscription.key().as_ref()],
@@ -59,35 +62,59 @@ pub struct Cancel<'info> {
         token::mint = subscription.token_mint,
         token::authority = subscription,
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
 
     /// Merchant settlement destination. Mint match enforced; address match
     /// against the snapshotted merchant_ata prevents redirection attacks.
+    /// Boxed for the same stack-frame reason as `vault`.
     #[account(
         mut,
         address = subscription.merchant_ata,
         token::mint = subscription.token_mint,
     )]
-    pub merchant_ata: Account<'info, TokenAccount>,
+    pub merchant_ata: Box<Account<'info, TokenAccount>>,
 
     /// Subscriber refund destination. Owner must match the signer.
+    /// Boxed for the same stack-frame reason as `vault`.
     #[account(
         mut,
         token::mint = subscription.token_mint,
         token::authority = subscriber,
     )]
-    pub subscriber_ata: Account<'info, TokenAccount>,
+    pub subscriber_ata: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
+
+    /// Optional `GracedSubscription` satellite — required iff
+    /// `subscription.state == GracePeriod` (handler enforces with
+    /// `MissingGraceSatellite`). When `Some`, Anchor `close = subscriber`
+    /// returns rent to the subscriber as part of cancel cleanup; when `None`
+    /// (cancel from `Active`), the close constraint is a no-op
+    /// (anchor-lang-1.0.1/src/accounts/option.rs:72-77).
+    /// ADR-007 §"cancel from GracePeriod" + §I-CANCEL-2.
+    #[account(
+        mut,
+        close = subscriber,
+        seeds = [GRACE_SEED, subscription.key().as_ref()],
+        bump,
+    )]
+    pub graced_subscription: Option<Account<'info, GracedSubscription>>,
 }
 
-/// ADR-002 §cancel pseudocode (revised 2026-04-27).
+/// ADR-002 §cancel pseudocode (revised 2026-04-27) + ADR-007 §"cancel from
+/// GracePeriod" GracePeriod arm.
 pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
-    // Step 1 — FSM guard. MVP: only Active is valid. ADR-003 §FSM enforcement.
+    // Step 1 — FSM guard. Cycle-3 reachable: `{Active, GracePeriod}` (ADR-007
+    // §I-CANCEL-4). `Paused` arm reachable post-ADR-006; deferred. The
+    // `matches!` shape lights up additional arms automatically when ADR-006
+    // / ADR-007-Exhausted ship.
     {
         let sub = &ctx.accounts.subscription;
         require!(
-            sub.state == SubscriptionState::Active,
+            matches!(
+                sub.state,
+                SubscriptionState::Active | SubscriptionState::GracePeriod
+            ),
             NakamaError::IllegalStateForCancel
         );
     }
@@ -106,10 +133,44 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     let subscription_pubkey = sub_view.key();
     let subscriber_pubkey = sub_view.subscriber;
     let plan_pubkey = sub_view.plan;
+    let current_state = sub_view.state;
 
-    // Step 4–6 — pro-rata math.
+    // ADR-007 §"cancel from GracePeriod" — `effective_now` clamps the unlocked
+    // calculation when cancelling from Grace. From `Active` it is just `now`;
+    // from `GracePeriod` it is `min(now, grace_until)` so a cancel after
+    // passive grace expiry (state still GracePeriod, but `now > grace_until`)
+    // settles fairly at the grace boundary instead of letting the merchant
+    // claim time the subscriber never funded. ADR-007 §I-CANCEL-1.
+    //
+    // From GracePeriod the satellite MUST be present — both for reading
+    // `grace_until` and for the Anchor `close = subscriber` constraint to
+    // actually run on the satellite (rent → subscriber).
+    let effective_now = match current_state {
+        SubscriptionState::Active => now,
+        SubscriptionState::GracePeriod => {
+            let grace = ctx
+                .accounts
+                .graced_subscription
+                .as_ref()
+                .ok_or(NakamaError::MissingGraceSatellite)?;
+            core::cmp::min(now, grace.grace_until)
+        }
+        // FSM guard above pinned the set; any other variant is unreachable in
+        // this branch.
+        _ => return err!(NakamaError::IllegalStateForCancel),
+    };
+
+    // Defense in depth: `effective_now >= stream_start` holds by construction
+    // (Active branch reuses `now` which passed the clock guard; GracePeriod
+    // branch clamps to `grace_until`, set at charge-tail when the stream was
+    // already running, so `grace_until >= entered_grace_at >= stream_start`).
+    // Re-check explicitly so the `as u64` cast cannot underflow on a future
+    // refactor that violates the invariant.
+    require!(effective_now >= stream_start, NakamaError::ClockBackwards);
+
+    // Step 4–6 — pro-rata math against `effective_now`.
     // u128 intermediate to dodge overflow on long-running streams (ADR-002 §Negative).
-    let elapsed = (now - stream_start) as u64; // safe: now >= stream_start checked above
+    let elapsed = (effective_now - stream_start) as u64;
     let unlocked_u128 = (elapsed as u128)
         .checked_mul(rate_per_second as u128)
         .ok_or(NakamaError::MathOverflow)?;

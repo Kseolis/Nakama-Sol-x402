@@ -1,0 +1,24 @@
+{
+  "name": "@nakama/clients-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nakama Protocol TypeScript SDK + CLI smoke scripts (clients/ts).",
+  "license": "ISC",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "smoke:top-up": "ts-node scripts/05-top-up.ts"
+  },
+  "dependencies": {
+    "@anchor-lang/core": "^1.0.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.1.5",
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,290 @@
+openapi: 3.1.0
+info:
+  title: Nakama x402 Facilitator
+  version: 0.1.0
+  description: |
+    HTTP facade over the on-chain Nakama Protocol for the ADR-007 demo flow.
+
+    End-to-end demo as four `curl` calls:
+
+    1. `subscribe` — wallet-direct, not via this API (uses the on-chain
+       `subscribe` instruction; out of scope here).
+    2. `keeper charge` — keeper bot pulls the stream until the vault
+       drains. After full exhaustion the on-chain handler auto-transitions
+       state from `Active` to `GracePeriod` and inits the
+       `GracedSubscription` satellite.
+    3. `POST /subscriptions/{sub_pda}/top-up` — subscriber rescues by
+       depositing. State flips back to `Active`; satellite closed; rent
+       returned to subscriber.
+    4. `GET /subscriptions/{sub_pda}/computed-status` — verify the
+       transition, observe the new `Active` / `ActiveLowFunds` payload.
+
+    Authentication: none in MVP. The facilitator holds a hot demo
+    subscriber keypair (loaded from stdin at startup). Production parity
+    requires wallet-adapter signed-tx pass-through; out of scope for the
+    hackathon demo.
+
+servers:
+  - url: http://localhost:8080
+    description: Local devnet facilitator
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      operationId: healthz
+      responses:
+        "200":
+          description: Service alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok"
+
+  /subscriptions/{sub_pda}/top-up:
+    post:
+      summary: Top up a subscription's escrow
+      description: |
+        Deposits `amount` USDC base units from the demo subscriber's ATA
+        into the subscription vault. If the subscription was in
+        `GracePeriod`, the on-chain handler transitions it back to `Active`
+        and closes the `GracedSubscription` satellite (rent returned to
+        subscriber). If the subscription was already `Active`, only the
+        cumulative `deposited_amount` is incremented.
+
+        Off-chain pre-validation: rejects `amount == 0` with HTTP 400 to
+        save an RPC roundtrip.
+      operationId: top_up
+      parameters:
+        - name: sub_pda
+          in: path
+          required: true
+          schema:
+            type: string
+            description: Subscription PDA (base58 Pubkey)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: integer
+                  format: uint64
+                  minimum: 1
+                  description: USDC base units to deposit (1_000_000 = 1 USDC).
+              example:
+                amount: 1000000
+      responses:
+        "200":
+          description: Top-up confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tx_signature]
+                properties:
+                  tx_signature:
+                    type: string
+                    description: Base58 transaction signature
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+        "503":
+          $ref: "#/components/responses/SigningUnavailable"
+
+  /subscriptions/{sub_pda}/computed-status:
+    get:
+      summary: Derive UX-friendly computed status
+      description: |
+        Reads the parent `Subscription` account and (optionally) the
+        `GracedSubscription` satellite via Solana RPC, then runs the
+        ADR-007 §"Off-chain ComputedStatus derive" boundary contract.
+
+        The variant is a JSON-tagged union (`{"state": "...", ...}`)
+        suitable for direct rendering by a UI. Variant payload fields
+        (`unlocked_pct`, `claimable`, `days_remaining`,
+        `seconds_remaining`) are off-chain enrichments; the dispatch is
+        purely on the on-chain `state` byte plus satellite presence.
+      operationId: computed_status
+      parameters:
+        - name: sub_pda
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Computed status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComputedStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+
+components:
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NotFound:
+      description: Subscription account not found on chain
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    UpstreamError:
+      description: Solana RPC failed or returned malformed account data
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    SigningUnavailable:
+      description: |
+        Facilitator was started without a demo subscriber keypair on stdin.
+        Restart with `NAKAMA_READ_DEMO_KEYPAIR_FROM_STDIN=1` and pipe
+        `~/.config/solana/id.json`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+
+  schemas:
+    ApiError:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - bad_request
+            - not_found
+            - signing_unavailable
+            - decode_error
+            - rpc_error
+            - internal_error
+
+    ComputedStatus:
+      oneOf:
+        - $ref: "#/components/schemas/Active"
+        - $ref: "#/components/schemas/ActiveLowFunds"
+        - $ref: "#/components/schemas/Paused"
+        - $ref: "#/components/schemas/InGrace"
+        - $ref: "#/components/schemas/GraceExpired"
+        - $ref: "#/components/schemas/Cancelled"
+        - $ref: "#/components/schemas/Exhausted"
+        - $ref: "#/components/schemas/Corrupt"
+      discriminator:
+        propertyName: state
+
+    Active:
+      type: object
+      required: [state, unlocked_pct, claimable]
+      properties:
+        state:
+          type: string
+          const: Active
+        unlocked_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+        claimable:
+          type: integer
+          format: uint64
+
+    ActiveLowFunds:
+      type: object
+      required: [state, unlocked_pct, claimable, days_remaining]
+      properties:
+        state:
+          type: string
+          const: ActiveLowFunds
+        unlocked_pct:
+          type: integer
+        claimable:
+          type: integer
+          format: uint64
+        days_remaining:
+          type: integer
+          format: uint32
+
+    Paused:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          const: Paused
+        resume_after:
+          type: integer
+          format: int64
+          nullable: true
+
+    InGrace:
+      type: object
+      required: [state, grace_until, seconds_remaining]
+      properties:
+        state:
+          type: string
+          const: InGrace
+        grace_until:
+          type: integer
+          format: int64
+        seconds_remaining:
+          type: integer
+          format: int64
+
+    GraceExpired:
+      type: object
+      required: [state, grace_until]
+      properties:
+        state:
+          type: string
+          const: GraceExpired
+        grace_until:
+          type: integer
+          format: int64
+
+    Cancelled:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          const: Cancelled
+
+    Exhausted:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          const: Exhausted
+
+    Corrupt:
+      type: object
+      required: [state, state_byte, reason]
+      properties:
+        state:
+          type: string
+          const: Corrupt
+        state_byte:
+          type: integer
+        reason:
+          type: string

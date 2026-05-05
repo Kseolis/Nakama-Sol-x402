@@ -54,6 +54,11 @@ pub const STATE_OFFSET: usize = 192;
 pub const PLAN_SEED: &[u8] = b"plan";
 pub const SUB_SEED: &[u8] = b"sub";
 pub const VAULT_SEED: &[u8] = b"vault";
+/// ADR-007 §"Storage decision" — `[GRACE_SEED, subscription.key().as_ref()]`.
+pub const GRACE_SEED: &[u8] = b"grace";
+
+/// ADR-007 §I-CONST-1 — `GRACE_DURATION = 7 * 24 * 60 * 60` seconds.
+pub const GRACE_DURATION: i64 = 7 * 24 * 60 * 60;
 
 pub fn program_id() -> Pubkey {
     PROGRAM_ID_STR.parse().expect("hardcoded valid base58")
@@ -64,7 +69,9 @@ pub fn usdc_mint() -> Pubkey {
 }
 
 pub fn token_program_id() -> Pubkey {
-    TOKEN_PROGRAM_ID_STR.parse().expect("hardcoded valid base58")
+    TOKEN_PROGRAM_ID_STR
+        .parse()
+        .expect("hardcoded valid base58")
 }
 
 // -- LiteSVM bring-up ------------------------------------------------------
@@ -184,12 +191,7 @@ pub fn install_token_account(
 
 /// Create the ATA at its canonical address with `amount` tokens minted in.
 /// Mirrors the SDK helper `getOrCreateAssociatedTokenAccount` semantics.
-pub fn install_funded_ata(
-    svm: &mut LiteSVM,
-    owner: &Pubkey,
-    mint: &Pubkey,
-    amount: u64,
-) -> Pubkey {
+pub fn install_funded_ata(svm: &mut LiteSVM, owner: &Pubkey, mint: &Pubkey, amount: u64) -> Pubkey {
     let ata_addr = ata(owner, mint);
     install_token_account(svm, &ata_addr, mint, owner, amount);
     ata_addr
@@ -215,10 +217,22 @@ pub fn vault_pda(subscription: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[VAULT_SEED, subscription.as_ref()], &program_id())
 }
 
+/// ADR-007 §"Storage decision" — `GracedSubscription` satellite PDA.
+/// Seeds: `[GRACE_SEED, subscription.key().as_ref()]`.
+pub fn grace_pda(subscription: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[GRACE_SEED, subscription.as_ref()], &program_id())
+}
+
 // -- Transaction helpers ---------------------------------------------------
 
 /// Build, sign and submit a transaction. Returns the wrapped LiteSVM result so
 /// the caller can decode error metadata via `common::error`.
+///
+/// `clippy::result_large_err` allowed: `litesvm::types::TransactionResult` is
+/// `Result<TransactionMetadata, FailedTransactionMetadata>`, the latter a
+/// large enum from upstream. Boxing here would force every test caller to
+/// match-and-deref. ADR-007 cycle-4 sign-off: documented suppression.
+#[allow(clippy::result_large_err)]
 pub fn send_tx(
     svm: &mut LiteSVM,
     payer: &Keypair,

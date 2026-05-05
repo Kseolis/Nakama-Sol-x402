@@ -23,8 +23,8 @@ mod common;
 use common::{
     clock,
     error::{
-        assert_nakama_err, assert_system_account_already_in_use, extract_custom_code,
-        NakamaError, ERROR_CODE_OFFSET,
+        assert_nakama_err, assert_system_account_already_in_use, extract_custom_code, NakamaError,
+        ERROR_CODE_OFFSET,
     },
     fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer,
 };

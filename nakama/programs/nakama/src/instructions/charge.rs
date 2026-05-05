@@ -30,9 +30,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
-use crate::constants::{SUB_SEED, VAULT_SEED};
+use crate::constants::{GRACE_DURATION, GRACE_SEED, SUB_SEED, VAULT_SEED};
 use crate::error::NakamaError;
-use crate::state::{Plan, Subscription, SubscriptionCharged, SubscriptionState};
+use crate::state::{
+    GraceEntered, GracedSubscription, Plan, Subscription, SubscriptionCharged, SubscriptionState,
+};
 
 /// Account validation per ADR-004 §9 (revised 2026-04-27 for BLK-03 / BLK-04).
 ///
@@ -96,7 +98,71 @@ pub struct Charge<'info> {
     /// Permissionless trigger: any pubkey may sign as `payer` (ADR-004 §1).
     /// No identity check — security comes from the math (monotonic
     /// `withdrawn_amount`) plus the state guard, not the signature.
+    #[account(mut)]
     pub payer: Signer<'info>,
+
+    /// ADR-007 §"charge handler tail" + §I-CHARGE-1.
+    ///
+    /// # Off-chain caller contract (BLK-007-MAJ-1)
+    ///
+    /// Off-chain callers (keeper bots, x402 facilitators) MUST always
+    /// pre-derive the PDA `[GRACE_SEED, subscription]` and attach it on
+    /// EVERY charge tx. Keepers cannot reliably predict the exhaustion
+    /// boundary off-chain — clock skew between caller and validator,
+    /// parallel charge races, and rate/period rounding all make
+    /// "predict-then-attach" non-deterministic. The only safe protocol
+    /// is "always attach"; the on-chain handler decides at post-CPI math
+    /// whether to consume the satellite (Active → GracePeriod transition)
+    /// or leave it untouched (init constraint is not fired by Anchor
+    /// codegen on this branch).
+    ///
+    /// The handler raises `MissingGraceSatellite` if `None` is passed and
+    /// post-CPI math would trigger the Active → GracePeriod transition;
+    /// the keeper must then re-submit with the satellite attached.
+    ///
+    /// Passing `program_id` placeholder OR omitting (with the
+    /// `allow-missing-optionals` cargo feature) is a permitted shortcut
+    /// ONLY for hand-built transactions where exhaustion is provably
+    /// impossible — e.g. trivial single-charge demos with a fresh
+    /// subscription where `claimable << deposited`. Production keepers
+    /// and facilitators MUST NOT take this shortcut.
+    ///
+    /// `Option<Account<T>>` + `init` — Anchor 1.0.1 codegen runs the `init`
+    /// constraint ONLY when the caller passes a real account; on `None` (caller
+    /// passes `program_id` placeholder, OR omits entirely with the
+    /// `allow-missing-optionals` cargo feature) init is skipped (verified
+    /// anchor-syn-1.0.1/src/codegen/accounts/constraints.rs:33-41 and
+    /// anchor-lang-1.0.1/src/accounts/option.rs:20-55).
+    ///
+    /// Keeper protocol:
+    /// - Routine charge (no exhaustion expected) → pass `program_id` placeholder
+    ///   or omit. Handler does NOT enter the grace tail; if the post-CPI math
+    ///   nonetheless exhausts the stream, handler errors with
+    ///   `MissingGraceSatellite` and the keeper re-submits with the satellite.
+    /// - Anticipated exhaustion → pre-derive PDA `[GRACE_SEED, subscription]`
+    ///   and pass it. Init fires only on the charge that actually flips state
+    ///   (subsequent charges from `GracePeriod` are blocked by the §2.h state
+    ///   guard at the top of this handler — `IllegalStateForCharge`).
+    ///
+    /// `init` requires the account to NOT exist; second flip into Grace on the
+    /// same Subscription is unreachable (a `GracePeriod`-state Subscription
+    /// blocks `charge` entirely), so init is at-most-once per Subscription
+    /// lifetime — exactly what ADR-007 §"Storage decision" requires.
+    /// Rent payer = `payer` (the keeper); recoverable on `top_up` / `cancel`
+    /// close (§"Authority decisions").
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + GracedSubscription::INIT_SPACE,
+        seeds = [GRACE_SEED, subscription.key().as_ref()],
+        bump,
+    )]
+    pub graced_subscription: Option<Account<'info, GracedSubscription>>,
+
+    /// Required by Anchor when any field has `init`. Anchor 1.0.1 raises a
+    /// compile-time error if `system_program` is missing from a struct that
+    /// inits a non-token account (anchor-syn parser/accounts/mod.rs:114-118).
+    pub system_program: Program<'info, System>,
 }
 
 /// ADR-004 §1 → §2 → §3 → §4 → §5 ordering.
@@ -194,15 +260,39 @@ pub fn charge_handler(ctx: Context<Charge>) -> Result<()> {
         .checked_add(period)
         .ok_or(NakamaError::MathOverflow)?;
 
-    // TODO(ADR-007 — Top-up & Grace integration): when `top_up` ships,
-    // un-comment the GracePeriod tail-transition here. Reserved per ADR-004
-    // §5 — MUST stay commented in MVP. security-auditor: please verify this
-    // hook is NOT active in MVP code.
-    //
-    //   if sub_mut.withdrawn_amount == sub_mut.deposited_amount {
-    //       sub_mut.state = SubscriptionState::GracePeriod;
-    //       sub_mut.grace_until = now + GRACE_DURATION;
-    //   }
+    // ADR-007 §"charge handler tail" — auto-transition Active → GracePeriod
+    // when the stream is fully consumed. `Option<Account<GracedSubscription>>`
+    // with `init` constraint (see Accounts struct above) makes the satellite
+    // present only when the caller anticipates this branch; on `None` we
+    // raise `MissingGraceSatellite` so the keeper re-submits with the
+    // pre-derived PDA. Init is at-most-once per Subscription lifetime
+    // (subsequent charges from GracePeriod are blocked by the §2.h state
+    // guard at the top of this handler).
+    if sub_mut.withdrawn_amount == sub_mut.deposited_amount {
+        // i64 + 604_800 cannot overflow for any realistic clock value
+        // (i64::MAX − GRACE_DURATION is in the year ~292 billion AD); checked
+        // for purity per onchain-conventions.md mandate. ADR-007 §I-CHARGE-2.
+        let grace_until = now
+            .checked_add(GRACE_DURATION)
+            .ok_or(NakamaError::MathOverflow)?;
+
+        let graced = ctx
+            .accounts
+            .graced_subscription
+            .as_mut()
+            .ok_or(NakamaError::MissingGraceSatellite)?;
+        graced.subscription = subscription_pubkey;
+        graced.entered_grace_at = now;
+        graced.grace_until = grace_until;
+
+        sub_mut.state = SubscriptionState::GracePeriod;
+
+        emit!(GraceEntered {
+            subscription: subscription_pubkey,
+            entered_grace_at: now,
+            grace_until,
+        });
+    }
 
     emit!(SubscriptionCharged {
         subscription: subscription_pubkey,

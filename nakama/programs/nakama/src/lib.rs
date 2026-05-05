@@ -1,9 +1,22 @@
 //! Nakama Protocol on-chain program.
 //!
 //! MVP day 1–7 surface: `create_plan` (ADR-014), `subscribe` (ADR-002),
-//! `charge` (ADR-004), `cancel` (ADR-002).
+//! `charge` (ADR-004), `cancel` (ADR-002), `cleanup` (ADR-013).
+//! Cycle-4 addition: `top_up` (ADR-007).
 //!
 //! See `docs/architecture/adr-001-account-model.md` for layout invariants.
+//!
+//! # Anchor cargo features
+//!
+//! `anchor-lang/allow-missing-optionals` is enabled (see `Cargo.toml`) so
+//! callers may OMIT trailing `Option<Account<T>>` accounts when the satellite
+//! is not needed (e.g., `charge` from a stream that won't exhaust, or `cancel`
+//! from `Active`). Without the feature, callers would have to pass `program_id`
+//! as a placeholder pubkey for absent optional accounts — a UX papercut for the
+//! TS SDK and keeper. Trade-off: NEVER add a required account after an optional
+//! one in any `Accounts` struct, otherwise a present-but-unsigned trailing
+//! required account would be silently absorbed as the optional's None case.
+//! See ADR-007 §"Source-of-truth verification" Q9.
 
 // Anchor 1.0.x `#[program]` macro expands to a `match` whose arms call
 // `Result::Err`, which clippy 1.89 flags as `diverging_sub_expression`.
@@ -58,5 +71,12 @@ pub mod nakama {
     /// tombstone. Closes the Subscription account, lamports → subscriber.
     pub fn cleanup(ctx: Context<Cleanup>) -> Result<()> {
         instructions::cleanup::cleanup_handler(ctx)
+    }
+
+    /// ADR-007 — subscriber-signed top-up. Transfers USDC into the vault and
+    /// (from `GracePeriod`) recovers the subscription back to `Active`,
+    /// closing the `GracedSubscription` satellite (rent → subscriber).
+    pub fn top_up(ctx: Context<TopUp>, amount: u64) -> Result<()> {
+        instructions::top_up::top_up_handler(ctx, amount)
     }
 }

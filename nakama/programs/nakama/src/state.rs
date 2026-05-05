@@ -181,8 +181,7 @@ pub struct Subscription {
 const _: () = {
     // Sum of every field before `state`, must equal 184. State offset on the
     // wire = 8 (discriminator) + 184 = 192. (BLK-19.)
-    const PRE_STATE: usize =
-          8   // next_charge_at
+    const PRE_STATE: usize = 8   // next_charge_at
         + 32  // subscriber
         + 32  // plan
         + 8   // price
@@ -190,7 +189,10 @@ const _: () = {
         + 32  // token_mint
         + 32  // merchant
         + 32; // merchant_ata
-    assert!(PRE_STATE == 184, "Subscription pre-state byte count drifted from ADR-001");
+    assert!(
+        PRE_STATE == 184,
+        "Subscription pre-state byte count drifted from ADR-001"
+    );
 
     // Borsh-serialized total (no discriminator).
     assert!(
@@ -204,6 +206,47 @@ const _: () = {
     assert!(
         SubscriptionState::INIT_SPACE == 1,
         "SubscriptionState must Borsh-serialize as exactly 1 byte"
+    );
+};
+
+/// Satellite PDA, mirroring the `PausedSubscription` pattern from ADR-006.
+/// Created when `charge` exhausts the stream (`withdrawn_amount ==
+/// deposited_amount`) — flips parent Subscription state to `GracePeriod` and
+/// snapshots the recovery window. Closed (rent → subscriber) on `top_up` from
+/// `GracePeriod` or `cancel` from `GracePeriod`. ADR-007 §"Storage decision".
+///
+/// Layout: 32 (subscription) + 8 (entered_grace_at) + 8 (grace_until) = 48
+/// Borsh; on-chain = 8 disc + 48 = 56 bytes (rent ~0.00040 SOL, recoverable on
+/// close). `INIT_SPACE` const-asserted at 48 below.
+///
+/// Seeds: `[GRACE_SEED, subscription.key().as_ref()]`.
+///
+/// Passive expiry: state byte stays `GracePeriod` past `grace_until` if no
+/// cancel/top_up trigger fires; off-chain `ComputedStatus::GraceExpired` is
+/// derived from `(state, grace_until, now)` per ADR-007 boundary contract.
+/// No on-chain `expire_grace` instruction (rejected alternative (h)).
+#[account]
+#[derive(InitSpace)]
+pub struct GracedSubscription {
+    /// Back-ref to the parent Subscription PDA — convenience for off-chain
+    /// joins (indexer / x402 facilitator) so a single
+    /// `getProgramAccounts` filter on this account type yields fully-resolved
+    /// rows without a second lookup. ADR-007 §"Storage decision".
+    pub subscription: Pubkey,
+    /// Snapshot of `Clock::unix_timestamp` at the auto-transition in `charge`
+    /// tail. ADR-007 §I-CHARGE-1.
+    pub entered_grace_at: i64,
+    /// `entered_grace_at + GRACE_DURATION`. Off-chain consumers compare
+    /// against `now` to differentiate `InGrace` vs `GraceExpired`.
+    /// ADR-007 §I-GRACE-2.
+    pub grace_until: i64,
+}
+
+const _: () = {
+    // 32 + 8 + 8 = 48. Pinned by ADR-007 §"Storage decision".
+    assert!(
+        GracedSubscription::INIT_SPACE == 48,
+        "GracedSubscription::INIT_SPACE drifted from ADR-007 layout (expected 48)"
     );
 };
 
@@ -266,4 +309,24 @@ pub struct SubscriptionCleaned {
     pub subscription: Pubkey,
     pub rent_returned_to: Pubkey,
     pub timestamp: i64,
+}
+
+/// Emitted by the `charge` tail when stream exhaustion auto-transitions
+/// `Active → GracePeriod` and the `GracedSubscription` satellite is created.
+/// ADR-007 §"charge handler tail" + §I-CHARGE-1.
+#[event]
+pub struct GraceEntered {
+    pub subscription: Pubkey,
+    pub entered_grace_at: i64,
+    pub grace_until: i64,
+}
+
+/// Emitted by `top_up` when the subscriber rescues a `GracePeriod`
+/// subscription back to `Active`. Satellite is closed in the same ix
+/// (rent → subscriber). ADR-007 §"top_up handler" + §I-TOPUP-6.
+#[event]
+pub struct GraceRecovered {
+    pub subscription: Pubkey,
+    pub top_up_amount: u64,
+    pub new_deposited: u64,
 }

@@ -8,9 +8,7 @@
 
 mod common;
 
-use common::{
-    fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer, STATE_OFFSET,
-};
+use common::{fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer, STATE_OFFSET};
 
 /// Source: ADR-001 §Plan account — `Plan` borsh footprint pinned at 153 bytes
 /// (+8 disc = 161 on chain). Test materialises a Plan and reads its raw

@@ -1,0 +1,16 @@
+[package]
+name = "nakama-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Off-chain typed bindings + ComputedStatus decoder for Nakama Protocol (ADR-007)."
+
+[dependencies]
+solana-pubkey = { workspace = true }
+borsh = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
