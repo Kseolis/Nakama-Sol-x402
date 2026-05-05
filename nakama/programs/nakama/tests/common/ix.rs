@@ -547,3 +547,78 @@ pub fn cancel_ix_full(
         data,
     }
 }
+
+// -- ADR-x402-001 lifecycle ix --------------------------------------------
+
+const DISC_OPEN_SESSION: [u8; 8] = [130, 54, 124, 7, 236, 20, 104, 104];
+const DISC_CLOSE_SESSION: [u8; 8] = [68, 114, 178, 140, 222, 38, 248, 211];
+
+#[derive(BorshSerialize)]
+struct OpenSessionArgs {
+    session_id: u64,
+    facilitator: Pubkey,
+    reservation_cap: u64,
+}
+
+/// Build an `open_session(session_id, facilitator, reservation_cap)` ix.
+///
+/// Wire order (canonical, matches ADR-x402-001 §"open_session" Accounts struct):
+///   parent (Subscription PDA), pay_session (init), subscriber (Signer mut),
+///   system_program.
+pub fn open_session_ix(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    session_id: u64,
+    facilitator: &Pubkey,
+    reservation_cap: u64,
+) -> Instruction {
+    let mut data = DISC_OPEN_SESSION.to_vec();
+    data.extend(
+        borsh::to_vec(&OpenSessionArgs {
+            session_id,
+            facilitator: *facilitator,
+            reservation_cap,
+        })
+        .expect("borsh open_session args"),
+    );
+
+    let (pay_session, _) = super::pay_session_pda(subscription, session_id);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false), // parent (mut for has_one read; not modified)
+            AccountMeta::new(pay_session, false),   // pay_session (init mut)
+            AccountMeta::new(*subscriber, true),    // subscriber (Signer, mut payer)
+            AccountMeta::new_readonly(system_program_id(), false),
+        ],
+        data,
+    }
+}
+
+/// Build a `close_session()` ix.
+///
+/// Wire order (canonical, matches ADR-x402-001 §"close_session" Accounts struct):
+///   parent (Subscription PDA), pay_session (mut, closed), subscriber
+///   (Signer, mut rent recipient).
+///
+/// Note: NO `parent.state == Active` guard on close_session per ADR-x402-001
+/// R1 closure — close must work from any parent state including Cancelled.
+pub fn close_session_ix(
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    session_id: u64,
+) -> Instruction {
+    let data = DISC_CLOSE_SESSION.to_vec();
+    let (pay_session, _) = super::pay_session_pda(subscription, session_id);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new_readonly(*subscription, false),
+            AccountMeta::new(pay_session, false), // mut, will be Anchor-closed
+            AccountMeta::new(*subscriber, true),  // Signer + rent recipient
+        ],
+        data,
+    }
+}

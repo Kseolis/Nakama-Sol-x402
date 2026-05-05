@@ -223,6 +223,19 @@ pub fn grace_pda(subscription: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[GRACE_SEED, subscription.as_ref()], &program_id())
 }
 
+/// ADR-x402-001 §"PaySession PDA Layout" — PaySession satellite PDA.
+/// Seeds: `[PAY_SESSION_SEED, subscription.key().as_ref(), &session_id.to_le_bytes()]`.
+pub fn pay_session_pda(subscription: &Pubkey, session_id: u64) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[
+            nakama::constants::PAY_SESSION_SEED,
+            subscription.as_ref(),
+            &session_id.to_le_bytes(),
+        ],
+        &program_id(),
+    )
+}
+
 // -- Transaction helpers ---------------------------------------------------
 
 /// Build, sign and submit a transaction. Returns the wrapped LiteSVM result so
