@@ -134,4 +134,19 @@ pub enum NakamaError {
     /// ADR-007 §"top_up handler" + §"cancel from GracePeriod".
     #[msg("GracePeriod state requires GracedSubscription account")]
     MissingGraceSatellite,
+
+    /// `cancel` signer is neither `subscription.subscriber` nor
+    /// `subscription.merchant`. Polymorphic dual-actor guard introduced by
+    /// ADR-009; supersedes (functionally) the legacy `UnauthorizedCancel`
+    /// variant which keyed off the `has_one = subscriber` constraint dropped
+    /// when the signer policy was widened.
+    #[msg("Signer is neither subscriber nor merchant of this subscription")]
+    NoCancelAuthority,
+
+    /// `cancel` was called with an explicit `subscriber` AccountInfo whose
+    /// pubkey does not match `subscription.subscriber`. Defends the rent-flow
+    /// invariant (vault rent → subscriber, not the cancel actor) when the
+    /// merchant is the signer. ADR-009 §"Rent-flow invariant".
+    #[msg("subscriber account does not match the snapshotted subscriber")]
+    SubscriberAccountMismatch,
 }

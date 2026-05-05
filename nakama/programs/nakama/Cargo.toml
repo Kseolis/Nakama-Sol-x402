@@ -57,6 +57,10 @@ spl-associated-token-account = "8.0.0"
 # Borsh-serialised manually).
 borsh = "1.5"
 bytemuck = "1.18"
+# base64 — decode `Program data: ...` lines emitted by Anchor `emit!` so tests
+# can assert event payload fields (cancelled_by, had_graced_satellite). Anchor
+# 1.0.1 emits events as base64-encoded `discriminator || borsh-payload`.
+base64 = "0.22"
 
 
 [lints.rust]

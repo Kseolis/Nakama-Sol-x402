@@ -147,7 +147,8 @@ fn cancel_from_grace_clamps_settle_pre_expiry() {
         &mut env.svm,
         &actors.subscriber,
         &[ix::cancel_ix_full(
-            &actors.subscriber.pubkey(),
+            &actors.subscriber.pubkey(), // signer
+            &actors.subscriber.pubkey(), // subscriber (rent recipient)
             &sub_pk,
             None,
             &actors.merchant_ata,
@@ -258,7 +259,8 @@ fn cancel_from_grace_clamps_settle_post_expiry() {
         &mut env.svm,
         &actors.subscriber,
         &[ix::cancel_ix_full(
-            &actors.subscriber.pubkey(),
+            &actors.subscriber.pubkey(), // signer
+            &actors.subscriber.pubkey(), // subscriber (rent recipient)
             &sub_pk,
             None,
             &actors.merchant_ata,
@@ -325,7 +327,8 @@ fn cancel_grace_without_satellite_rejected() {
         &mut env.svm,
         &actors.subscriber,
         &[ix::cancel_ix_full(
-            &actors.subscriber.pubkey(),
+            &actors.subscriber.pubkey(), // signer
+            &actors.subscriber.pubkey(), // subscriber (rent recipient)
             &sub_pk,
             None,
             &actors.merchant_ata,

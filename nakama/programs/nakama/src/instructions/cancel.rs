@@ -1,25 +1,27 @@
-//! `cancel` instruction — ADR-002 §cancel + ADR-013 §"Cancel handler" (cycle-3 split).
+//! `cancel` instruction — ADR-002 §cancel + ADR-013 §"Cancel handler" (cycle-3
+//! split) + ADR-009 §"Decision" (polymorphic signer extension).
 //!
-//! Subscriber-only (BLK-08). Settle merchant fairly, refund subscriber pro-rata,
-//! close vault TokenAccount via explicit SPL CPI (BLK-15). **Subscription account
-//! is preserved as a tombstone** — `state == Cancelled` is observable on-chain
-//! until subscriber calls `cleanup` (ADR-013 §Decision). Rent reclaim is the
-//! subscriber's choice of timing, never the merchant's (ADR-013 §Q1, §Q4).
+//! Settle merchant fairly, refund subscriber pro-rata, close vault TokenAccount
+//! via explicit SPL CPI (BLK-15). **Subscription account is preserved as a
+//! tombstone** — `state == Cancelled` is observable on-chain until subscriber
+//! calls `cleanup` (ADR-013 §Decision). Rent reclaim is the subscriber's
+//! choice of timing, never the merchant's (ADR-013 §Q1, §Q4).
 //!
-//! Post-split rationale (vs cycle-2 fused-cancel MVP):
-//! - Multi-party UX (ADR-009): merchant may extend `cancel` signer policy;
-//!   `cleanup` stays subscriber-only.
-//! - Audit trail: `getProgramAccounts` filter on `state == 4` lists pending
-//!   tombstones independently of event-log retention.
-//! - x402 forward-compat: tombstone serves as parent-state sentinel for
-//!   PaySession satellites (ADR-013 §"x402 forward-compat", R1).
+//! ADR-009 widens the signer policy from `has_one = subscriber` to a
+//! polymorphic guard: signer ∈ {subscription.subscriber, subscription.merchant}.
+//! Settle math, CPI transfers, vault close, and Subscription tombstone state
+//! are inherited unchanged from ADR-013. Rent flow is unchanged: vault rent
+//! always returns to `subscription.subscriber` (passed as a separate
+//! UncheckedAccount validated by handler), regardless of who signs.
 //!
 //! Hard guards:
-//! - BLK-08 `subscriber: Signer<'info>` + `has_one = subscriber` constraint.
+//! - ADR-009 polymorphic-signer guard: explicit handler require! against
+//!   `subscription.subscriber` and `subscription.merchant` snapshots.
 //! - BLK-06 `ClockBackwards` against `stream_start`.
 //! - BLK-14 manual `CpiContext::new_with_signer` with explicit seed slice.
-//! - BLK-15 `spl_token::close_account` CPI for vault (Anchor `close` doesn't
-//!   handle TokenAccount close cleanly).
+//! - BLK-15 `spl_token::close_account` CPI for vault.
+//! - ADR-009 `SubscriberAccountMismatch`: explicit `address = subscription.subscriber`
+//!   constraint pins rent recipient to the snapshotted subscriber.
 
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
@@ -28,33 +30,51 @@ use crate::constants::{GRACE_SEED, SUB_SEED, VAULT_SEED};
 use crate::error::NakamaError;
 use crate::state::{GracedSubscription, Subscription, SubscriptionCancelled, SubscriptionState};
 
-/// Account validation per ADR-002 §cancel signer policy (BLK-08).
+/// Account validation per ADR-013 §"Cancel handler" Accounts struct + ADR-009
+/// §"Constraint shape" polymorphic signer split.
+///
+/// Wire order (canonical IDL): signer first, then `subscription` BEFORE
+/// `subscriber` so the address constraint `subscriber.address =
+/// subscription.subscriber` resolves against an already-loaded account
+/// (Anchor evaluates fields in declaration order; back-references work,
+/// forward-references surface as `AccountOwnedByWrongProgram` 3007).
+///
+///   signer, subscription, subscriber, vault, merchant_ata, subscriber_ata,
+///   token_program, graced_subscription (Option, trailing).
 #[derive(Accounts)]
 pub struct Cancel<'info> {
-    /// Subscriber — must match `subscription.subscriber` (BLK-08 / has_one).
-    /// Receives vault refund + closed-account rent.
-    #[account(mut)]
-    pub subscriber: Signer<'info>,
+    /// Polymorphic cancel actor. Validated by handler against
+    /// `subscription.subscriber` OR `subscription.merchant`. ADR-009.
+    pub signer: Signer<'info>,
 
     /// Subscription PDA — **preserved as tombstone** post-cancel (ADR-013).
-    /// `has_one = subscriber` enforces that the signer matches the snapshotted
-    /// subscriber, so an arbitrary account cannot cancel another's subscription.
-    /// No `close` attribute: account closure is the responsibility of
-    /// `cleanup` (ADR-013 §Q4).
+    /// Seed-derived from `(subscriber, plan)` snapshots; signer-policy is
+    /// enforced in handler (ADR-009 polymorphic guard) rather than declarative
+    /// `has_one = subscriber`, which is incompatible with merchant-cancel.
+    /// Declared before `subscriber` so the latter's `address` constraint can
+    /// reference `subscription.subscriber`.
     #[account(
         mut,
-        has_one = subscriber @ NakamaError::UnauthorizedCancel,
         seeds = [SUB_SEED, subscription.subscriber.as_ref(), subscription.plan.as_ref()],
         bump = subscription.bump,
     )]
     pub subscription: Account<'info, Subscription>,
 
+    /// Snapshotted subscriber wallet — rent recipient for vault close and
+    /// (if Grace) `graced_subscription` close. Address-pinned to
+    /// `subscription.subscriber` so a merchant-signer flow cannot redirect
+    /// rent. ADR-009 §"Rent-flow invariant".
+    /// CHECK: address-constraint enforces equality to the snapshotted pubkey.
+    #[account(
+        mut,
+        address = subscription.subscriber @ NakamaError::SubscriberAccountMismatch,
+    )]
+    pub subscriber: UncheckedAccount<'info>,
+
     /// Per-subscription vault. Closed via explicit SPL CPI (BLK-15) after
-    /// final settle + refund. authority = subscription PDA, signer-seeds
-    /// derived from stored `vault_bump` (BLK-03). Boxed to keep the
-    /// `Cancel::try_accounts` stack frame under the sBPF 4 KiB cap; ADR-007
-    /// added an `Option<Account<GracedSubscription>>` slot which pushed the
-    /// frame to ~4224 B (anchor-lang-1.0.1/src/accounts/boxed.rs).
+    /// final settle + refund. Boxed to keep `Cancel::try_accounts` stack
+    /// frame under the sBPF 4 KiB cap (ADR-007 added the `Option<Account<
+    /// GracedSubscription>>` slot which pushed the frame to ~4224 B).
     #[account(
         mut,
         seeds = [VAULT_SEED, subscription.key().as_ref()],
@@ -64,9 +84,8 @@ pub struct Cancel<'info> {
     )]
     pub vault: Box<Account<'info, TokenAccount>>,
 
-    /// Merchant settlement destination. Mint match enforced; address match
-    /// against the snapshotted merchant_ata prevents redirection attacks.
-    /// Boxed for the same stack-frame reason as `vault`.
+    /// Merchant settlement destination. Address pinned to the snapshot
+    /// (defense-in-depth against redirection). Boxed for stack-frame parity.
     #[account(
         mut,
         address = subscription.merchant_ata,
@@ -74,12 +93,13 @@ pub struct Cancel<'info> {
     )]
     pub merchant_ata: Box<Account<'info, TokenAccount>>,
 
-    /// Subscriber refund destination. Owner must match the signer.
-    /// Boxed for the same stack-frame reason as `vault`.
+    /// Subscriber refund destination. Authority pinned to the snapshotted
+    /// subscriber (NOT the signer) — merchant-cancel still refunds the
+    /// subscriber's ATA, never the merchant's. Boxed for stack-frame parity.
     #[account(
         mut,
         token::mint = subscription.token_mint,
-        token::authority = subscriber,
+        token::authority = subscription.subscriber,
     )]
     pub subscriber_ata: Box<Account<'info, TokenAccount>>,
 
@@ -88,10 +108,8 @@ pub struct Cancel<'info> {
     /// Optional `GracedSubscription` satellite — required iff
     /// `subscription.state == GracePeriod` (handler enforces with
     /// `MissingGraceSatellite`). When `Some`, Anchor `close = subscriber`
-    /// returns rent to the subscriber as part of cancel cleanup; when `None`
-    /// (cancel from `Active`), the close constraint is a no-op
-    /// (anchor-lang-1.0.1/src/accounts/option.rs:72-77).
-    /// ADR-007 §"cancel from GracePeriod" + §I-CANCEL-2.
+    /// returns rent to the snapshotted subscriber (NOT the cancel actor).
+    /// ADR-007 §"cancel from GracePeriod" + §I-CANCEL-2 + ADR-009 rent-flow.
     #[account(
         mut,
         close = subscriber,
@@ -102,12 +120,24 @@ pub struct Cancel<'info> {
 }
 
 /// ADR-002 §cancel pseudocode (revised 2026-04-27) + ADR-007 §"cancel from
-/// GracePeriod" GracePeriod arm.
+/// GracePeriod" + ADR-009 §"Decision" polymorphic signer guard.
 pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
+    // Step 0 — ADR-009 polymorphic signer guard. Single source of truth: the
+    // snapshotted `subscriber` and `merchant` pubkeys on Subscription. Plan
+    // account is intentionally NOT loaded — `Subscription.merchant` was
+    // snapshotted at subscribe (ADR-001 §Consequences) precisely to avoid this
+    // dependency in cancel/charge handlers.
+    {
+        let sub = &ctx.accounts.subscription;
+        let signer_key = ctx.accounts.signer.key();
+        require!(
+            signer_key == sub.subscriber || signer_key == sub.merchant,
+            NakamaError::NoCancelAuthority
+        );
+    }
+
     // Step 1 — FSM guard. Cycle-3 reachable: `{Active, GracePeriod}` (ADR-007
-    // §I-CANCEL-4). `Paused` arm reachable post-ADR-006; deferred. The
-    // `matches!` shape lights up additional arms automatically when ADR-006
-    // / ADR-007-Exhausted ship.
+    // §I-CANCEL-4). `Paused` arm reachable post-ADR-006; deferred.
     {
         let sub = &ctx.accounts.subscription;
         require!(
@@ -132,19 +162,13 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     let subscription_bump = sub_view.bump;
     let subscription_pubkey = sub_view.key();
     let subscriber_pubkey = sub_view.subscriber;
+    let merchant_pubkey = sub_view.merchant;
     let plan_pubkey = sub_view.plan;
     let current_state = sub_view.state;
+    let cancelled_by = ctx.accounts.signer.key();
 
     // ADR-007 §"cancel from GracePeriod" — `effective_now` clamps the unlocked
-    // calculation when cancelling from Grace. From `Active` it is just `now`;
-    // from `GracePeriod` it is `min(now, grace_until)` so a cancel after
-    // passive grace expiry (state still GracePeriod, but `now > grace_until`)
-    // settles fairly at the grace boundary instead of letting the merchant
-    // claim time the subscriber never funded. ADR-007 §I-CANCEL-1.
-    //
-    // From GracePeriod the satellite MUST be present — both for reading
-    // `grace_until` and for the Anchor `close = subscriber` constraint to
-    // actually run on the satellite (rent → subscriber).
+    // calculation when cancelling from Grace.
     let effective_now = match current_state {
         SubscriptionState::Active => now,
         SubscriptionState::GracePeriod => {
@@ -155,21 +179,12 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
                 .ok_or(NakamaError::MissingGraceSatellite)?;
             core::cmp::min(now, grace.grace_until)
         }
-        // FSM guard above pinned the set; any other variant is unreachable in
-        // this branch.
         _ => return err!(NakamaError::IllegalStateForCancel),
     };
 
-    // Defense in depth: `effective_now >= stream_start` holds by construction
-    // (Active branch reuses `now` which passed the clock guard; GracePeriod
-    // branch clamps to `grace_until`, set at charge-tail when the stream was
-    // already running, so `grace_until >= entered_grace_at >= stream_start`).
-    // Re-check explicitly so the `as u64` cast cannot underflow on a future
-    // refactor that violates the invariant.
     require!(effective_now >= stream_start, NakamaError::ClockBackwards);
 
     // Step 4–6 — pro-rata math against `effective_now`.
-    // u128 intermediate to dodge overflow on long-running streams (ADR-002 §Negative).
     let elapsed = (effective_now - stream_start) as u64;
     let unlocked_u128 = (elapsed as u128)
         .checked_mul(rate_per_second as u128)
@@ -184,12 +199,7 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         .checked_sub(unlocked)
         .ok_or(NakamaError::MathOverflow)?;
 
-    // Subscription PDA signer seeds (BLK-14: explicit slice of slices, manual signing).
-    // The vault TokenAccount's authority is the Subscription PDA (set in subscribe via
-    // `token::authority = subscription`). SPL Token requires Transfer.authority ==
-    // source.owner and that authority to sign — so all vault-sourced CPIs must be
-    // signed with the Subscription PDA seeds, not the vault seeds.
-    // https://docs.rs/anchor-lang/1.0.1/anchor_lang/context/struct.CpiContext.html
+    // Subscription PDA signer seeds (BLK-14: explicit slice of slices).
     let sub_seeds: &[&[u8]] = &[
         SUB_SEED,
         subscriber_pubkey.as_ref(),
@@ -228,15 +238,13 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         token::transfer(cpi_ctx, refund)?;
     }
 
-    // Step 11 — set state to Cancelled. Post-split (ADR-013) this byte
-    // **persists** on-chain as a tombstone observable by indexer / x402
-    // satellites until the subscriber calls `cleanup`.
+    let had_graced_satellite = ctx.accounts.graced_subscription.is_some();
+
+    // Step 11 — set state to Cancelled.
     {
         let sub_mut = &mut ctx.accounts.subscription;
         sub_mut.state = SubscriptionState::Cancelled;
         sub_mut.last_charge_at = now;
-        // withdrawn_amount tracks cumulative settlement for off-chain debug;
-        // safe-add — final_claimable is bounded by deposited.
         sub_mut.withdrawn_amount = sub_mut
             .withdrawn_amount
             .checked_add(final_claimable)
@@ -244,11 +252,7 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     }
 
     // Step 10 — close vault TokenAccount with explicit CPI (BLK-15).
-    // Lamports → subscriber. Authority is the Subscription PDA, signed via the
-    // subscription PDA seeds (vault's authority IS subscription).
-    //
-    // Per anchor-spl 1.0.1 token::close_account / spl-token close_account:
-    // https://docs.rs/anchor-spl/1.0.1/anchor_spl/token/fn.close_account.html
+    // Lamports → snapshotted subscriber (NOT cancel actor) — ADR-009 invariant.
     let close_accounts = CloseAccount {
         account: ctx.accounts.vault.to_account_info(),
         destination: ctx.accounts.subscriber.to_account_info(),
@@ -265,12 +269,13 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         subscription: subscription_pubkey,
         subscriber: subscriber_pubkey,
         plan: plan_pubkey,
+        merchant: merchant_pubkey,
+        cancelled_by,
         final_settled: final_claimable,
         refunded: refund,
+        had_graced_satellite,
         timestamp: now,
     });
 
-    // Subscription account intentionally NOT closed — tombstone preservation
-    // per ADR-013 §"Cancel handler". Subscriber reclaims rent via `cleanup`.
     Ok(())
 }

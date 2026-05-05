@@ -61,8 +61,10 @@ pub mod nakama {
         instructions::charge::charge_handler(ctx)
     }
 
-    /// ADR-002 + ADR-013 — subscriber-only cancel: settle pro-rata, refund,
-    /// close vault. Subscription account preserved as tombstone (cycle-3 split).
+    /// ADR-002 + ADR-013 + ADR-009 — polymorphic cancel (subscriber OR merchant):
+    /// settle pro-rata, refund, close vault. Subscription account preserved as
+    /// tombstone (cycle-3 split). Rent flow unchanged regardless of signer
+    /// (vault rent → snapshotted subscriber).
     pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
         instructions::cancel::cancel_handler(ctx)
     }

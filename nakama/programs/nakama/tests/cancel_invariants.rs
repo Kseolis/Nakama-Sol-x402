@@ -1,15 +1,12 @@
 //! Error-path tests for `cancel`.
 //!
 //! Coverage:
-//! - BLK-08 / ADR-002 §cancel signer policy — `UnauthorizedCancel` /
-//!   has_one mismatch when a non-subscriber signs.
+//! - ADR-009 §"Decision" polymorphic-signer guard — `NoCancelAuthority` when
+//!   signer is neither subscriber nor merchant; `SubscriberAccountMismatch`
+//!   when the explicit subscriber slot is swapped.
 //! - BLK-06 / ADR-002 §cancel step 3 — `ClockBackwards` when
 //!   `now < stream_start`.
-//! - ADR-013 §"Cancel handler" — second cancel from `Cancelled` state fires
-//!   `IllegalStateForCancel`. The tombstone is alive post-split (ADR-013
-//!   §Decision), so the FSM guard is reachable. Replaces cycle-2 BLK-10
-//!   pin (`AccountNotInitialized`) which was an artifact of the fused-MVP
-//!   close-on-cancel.
+//! - ADR-013 §"Cancel handler" — second cancel from `Cancelled` state.
 
 mod common;
 
@@ -60,14 +57,15 @@ fn create_plan_and_subscribe(
     (plan_pk, sub_pk)
 }
 
-/// Source: ADR-002 §cancel signer policy, BLK-08 — only subscriber may cancel.
+/// Source: ADR-009 rent-flow invariant — `subscriber` UncheckedAccount slot
+/// is `address = subscription.subscriber`, so passing a stranger's pubkey
+/// there fails declaratively before the polymorphic signer guard runs.
 ///
-/// Attacker submits cancel with their own keypair as `subscriber` signer.
-/// Anchor's `has_one = subscriber` plus PDA seed mismatch should reject;
-/// either `ConstraintHasOne`, a seed mismatch, or `UnauthorizedCancel`
-/// fires before any funds move.
+/// This is the "swap the rent recipient" attack: attacker is signer AND
+/// passes their own pubkey for the subscriber slot, hoping to redirect
+/// vault-close rent. Anchor's `address = ...` constraint fires first.
 #[test]
-fn unauthorized_cancel_rejected() {
+fn cancel_with_swapped_subscriber_slot_rejected() {
     let mut env = setup();
     let actors = fund_actors(&mut env, 1_000_000);
     let (_, sub_pk) = create_plan_and_subscribe(&mut env, &actors);
@@ -79,14 +77,11 @@ fn unauthorized_cancel_rejected() {
     let attacker_ata =
         common::install_funded_ata(&mut env.svm, &attacker.pubkey(), &common::usdc_mint(), 0);
 
-    // Pass `attacker` where `subscriber` is expected. Subscription account is
-    // unchanged (PDA derived from real subscriber), so `has_one = subscriber`
-    // should fire.
     let result = send_tx(
         &mut env.svm,
         &attacker,
         &[ix::cancel_ix(
-            &attacker.pubkey(), // wrong signer
+            &attacker.pubkey(), // signer + subscriber slot both attacker
             &sub_pk,
             &actors.merchant_ata,
             &attacker_ata,
@@ -94,11 +89,43 @@ fn unauthorized_cancel_rejected() {
         &[&attacker],
     );
 
-    // AMBIG-02 (closed): tightened from assert_any_err in
-    // chore/cleanup-cycle-1-debt. Cycle-1 confirmed the handler-side
-    // `require!` (BLK-08) fires before Anchor's `has_one`, so the code is
-    // always 6009 = NakamaError::UnauthorizedCancel.
-    assert_nakama_err::<()>(result, NakamaError::UnauthorizedCancel);
+    // ADR-009: address-constraint on subscriber slot fires before the handler
+    // polymorphic guard.
+    assert_nakama_err::<()>(result, NakamaError::SubscriberAccountMismatch);
+}
+
+/// Source: ADR-009 §"Decision" — polymorphic guard {subscriber, merchant}.
+/// Stranger signer with the correct subscriber slot routes through Anchor's
+/// declarative validation cleanly; the handler require! is the gate.
+#[test]
+fn cancel_with_stranger_signer_rejected() {
+    let mut env = setup();
+    let actors = fund_actors(&mut env, 1_000_000);
+    let (_, sub_pk) = create_plan_and_subscribe(&mut env, &actors);
+
+    let stranger = solana_keypair::Keypair::new();
+    env.svm
+        .airdrop(&stranger.pubkey(), 5_000_000_000)
+        .expect("airdrop stranger");
+
+    // signer = stranger; subscriber slot = real subscriber (so the address
+    // constraint passes); subscriber_ata = real subscriber's ata.
+    let result = send_tx(
+        &mut env.svm,
+        &stranger,
+        &[ix::cancel_ix_with_signer(
+            &stranger.pubkey(),
+            &actors.subscriber.pubkey(),
+            &sub_pk,
+            None,
+            &actors.merchant_ata,
+            &actors.subscriber_ata,
+            None,
+        )],
+        &[&stranger],
+    );
+
+    assert_nakama_err::<()>(result, NakamaError::NoCancelAuthority);
 }
 
 /// Source: ADR-002 §cancel step 3, BLK-06 — `now < stream_start` rejected with

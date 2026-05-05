@@ -51,6 +51,11 @@ pub enum NakamaError {
     IllegalStateForTopUp = 16,
     IllegalAmountForTopUp = 17,
     MissingGraceSatellite = 18,
+    // ADR-009 §"Single error variant" + rent-recipient guard. Indices follow
+    // declaration order in `programs/nakama/src/error.rs` (after
+    // MissingGraceSatellite).
+    NoCancelAuthority = 19,
+    SubscriberAccountMismatch = 20,
 }
 
 impl NakamaError {

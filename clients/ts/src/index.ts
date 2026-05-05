@@ -33,6 +33,11 @@ export {
 } from "./instructions/topUp";
 
 export {
+  buildCancelIx,
+  type BuildCancelIxArgs,
+} from "./instructions/cancel";
+
+export {
   deriveStatus,
   normalizeSubscriptionAccount,
   type ComputedStatus,

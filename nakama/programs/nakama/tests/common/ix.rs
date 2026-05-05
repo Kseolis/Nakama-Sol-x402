@@ -284,13 +284,65 @@ pub fn charge_ix_full(
 
 // -- cancel ----------------------------------------------------------------
 
+/// Subscriber-signer cancel — pre-ADR-009 default. Signer == subscriber.
 pub fn cancel_ix(
     subscriber: &Pubkey,
     subscription: &Pubkey,
     merchant_ata: &Pubkey,
     subscriber_ata: &Pubkey,
 ) -> Instruction {
-    cancel_ix_with_overrides(subscriber, subscription, None, merchant_ata, subscriber_ata)
+    cancel_ix_with_signer(
+        /* signer = */ subscriber,
+        /* subscriber = */ subscriber,
+        subscription,
+        None,
+        merchant_ata,
+        subscriber_ata,
+        /* graced_subscription = */ None,
+    )
+}
+
+/// Merchant-signer cancel — ADR-009. Signer == merchant; subscriber slot still
+/// receives rent.
+pub fn cancel_ix_by_merchant(
+    merchant: &Pubkey,
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    merchant_ata: &Pubkey,
+    subscriber_ata: &Pubkey,
+) -> Instruction {
+    cancel_ix_with_signer(
+        merchant,
+        subscriber,
+        subscription,
+        None,
+        merchant_ata,
+        subscriber_ata,
+        None,
+    )
+}
+
+/// Adversarial / parametric variant — explicit signer + subscriber slot,
+/// optional vault override and graced satellite. ADR-009 wire format.
+#[allow(clippy::too_many_arguments)]
+pub fn cancel_ix_with_signer(
+    signer: &Pubkey,
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    vault_override: Option<Pubkey>,
+    merchant_ata: &Pubkey,
+    subscriber_ata: &Pubkey,
+    graced_subscription: Option<Pubkey>,
+) -> Instruction {
+    cancel_ix_full(
+        signer,
+        subscriber,
+        subscription,
+        vault_override,
+        merchant_ata,
+        subscriber_ata,
+        graced_subscription,
+    )
 }
 
 // -- cleanup ---------------------------------------------------------------
@@ -425,6 +477,8 @@ pub fn cleanup_ix_with_signer(
     }
 }
 
+/// Adversarial entry-point preserved for ADR-007 callsites that pre-date
+/// ADR-009; signer always == subscriber.
 pub fn cancel_ix_with_overrides(
     subscriber: &Pubkey,
     subscription: &Pubkey,
@@ -434,6 +488,7 @@ pub fn cancel_ix_with_overrides(
 ) -> Instruction {
     cancel_ix_full(
         subscriber,
+        subscriber,
         subscription,
         vault_override,
         merchant_ata,
@@ -442,19 +497,25 @@ pub fn cancel_ix_with_overrides(
     )
 }
 
-/// Full version: explicit `graced_subscription` for ADR-007 cancel-from-Grace
-/// tests.
+/// Full version: explicit `signer` + rent-recipient `subscriber` slot +
+/// `graced_subscription` for ADR-007 cancel-from-Grace and ADR-009
+/// merchant-cancel tests.
 ///
-/// IDL order (verified 2026-05-05 against `target/idl/nakama.json`):
-///   subscriber, subscription, vault, merchant_ata, subscriber_ata,
+/// IDL order (ADR-009 canonical, post-merchant-cancel split):
+///   signer, subscription, subscriber, vault, merchant_ata, subscriber_ata,
 ///   token_program, graced_subscription (optional, trailing).
 ///
-/// Trailing-optional convention: `Some(pda)` makes Anchor run the
-/// `close = subscriber` constraint on the satellite, returning rent to the
-/// subscriber (ADR-007 §I-CANCEL-2). `None` plants the `program_id`
-/// placeholder, which Anchor + `allow-missing-optionals` interprets as
-/// `Option::None` so no satellite operations run (cancel-from-Active path).
+/// Note: subscription precedes subscriber so the latter's
+/// `address = subscription.subscriber` constraint resolves against an
+/// already-loaded account; forward-references surface as Anchor 3007.
+///
+/// `signer` writes is_signer=true; `subscriber` is is_signer=false (rent
+/// recipient validated by handler against `subscription.subscriber`).
+/// `graced_subscription`: `Some(pda)` makes Anchor run `close = subscriber`;
+/// `None` plants `program_id` placeholder for `allow-missing-optionals`.
+#[allow(clippy::too_many_arguments)]
 pub fn cancel_ix_full(
+    signer: &Pubkey,
     subscriber: &Pubkey,
     subscription: &Pubkey,
     vault_override: Option<Pubkey>,
@@ -474,13 +535,14 @@ pub fn cancel_ix_full(
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*subscriber, true),      // subscriber signer
+            AccountMeta::new(*signer, true),          // signer (Signer)
             AccountMeta::new(*subscription, false),   // subscription PDA (preserved)
-            AccountMeta::new(vault, false),           // vault PDA (closed via SPL CPI)
-            AccountMeta::new(*merchant_ata, false),   // merchant_ata (settle dest)
+            AccountMeta::new(*subscriber, false), // subscriber (UncheckedAccount, rent recipient)
+            AccountMeta::new(vault, false),       // vault PDA (closed via SPL CPI)
+            AccountMeta::new(*merchant_ata, false), // merchant_ata (settle dest)
             AccountMeta::new(*subscriber_ata, false), // subscriber_ata (refund dest)
             AccountMeta::new_readonly(token_program_id(), false),
-            graced_meta, // graced_subscription (Option)
+            graced_meta, // graced_subscription (Option, trailing)
         ],
         data,
     }

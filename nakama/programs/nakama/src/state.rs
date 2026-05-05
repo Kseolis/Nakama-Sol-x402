@@ -279,13 +279,24 @@ pub struct SubscriptionStarted {
 /// `cleanup` — off-chain consumers can read `state` directly via
 /// `getProgramAccounts` filter on byte 192, in addition to listening for
 /// this event. ADR-013 §"x402 forward-compat".
+///
+/// ADR-009 extension: `cancelled_by` records the polymorphic actor
+/// (subscriber OR merchant) so off-chain analytics can split churn (subscriber)
+/// from offboarding/compliance (merchant) without inferring from auxiliary
+/// state. `had_graced_satellite` echoes whether a `GracedSubscription` was
+/// closed as part of cancel — keeper accounting hint.
 #[event]
 pub struct SubscriptionCancelled {
     pub subscription: Pubkey,
     pub subscriber: Pubkey,
     pub plan: Pubkey,
+    pub merchant: Pubkey,
+    /// Polymorphic cancel actor — equal to either `subscriber` or `merchant`.
+    /// ADR-009 §"Telemetry: event log".
+    pub cancelled_by: Pubkey,
     pub final_settled: u64,
     pub refunded: u64,
+    pub had_graced_satellite: bool,
     pub timestamp: i64,
 }
 
