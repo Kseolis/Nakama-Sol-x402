@@ -652,11 +652,11 @@ pub fn settle_usage_ix(
     Instruction {
         program_id: program_id(),
         accounts: vec![
-            AccountMeta::new(*subscription, false),    // parent (mut for withdrawn_amount)
-            AccountMeta::new(pay_session, false),      // pay_session (mut — usage_amount, state)
-            AccountMeta::new(*vault, false),           // vault (mut, source of CPI)
-            AccountMeta::new(*merchant_ata, false),    // merchant_ata (mut, dest of CPI)
-            AccountMeta::new(*facilitator, true),      // facilitator (Signer)
+            AccountMeta::new(*subscription, false), // parent (mut for withdrawn_amount)
+            AccountMeta::new(pay_session, false),   // pay_session (mut — usage_amount, state)
+            AccountMeta::new(*vault, false),        // vault (mut, source of CPI)
+            AccountMeta::new(*merchant_ata, false), // merchant_ata (mut, dest of CPI)
+            AccountMeta::new(*facilitator, true),   // facilitator (Signer)
             AccountMeta::new_readonly(*token_prog, false),
         ],
         data,
