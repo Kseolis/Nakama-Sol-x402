@@ -123,7 +123,10 @@ fn open_session_initializes_pda_with_parent_snapshots() {
         facilitator_keypair.pubkey(),
         "facilitator delegated"
     );
-    assert_eq!(sess.session_id, session_id, "session_id mirrored from seeds");
+    assert_eq!(
+        sess.session_id, session_id,
+        "session_id mirrored from seeds"
+    );
     assert_eq!(sess.opened_at, T0, "opened_at == clock at open");
     assert_eq!(sess.last_settle_at, 0, "last_settle_at zero pre-settle");
     assert_eq!(sess.usage_amount, 0, "usage_amount zero at open");
