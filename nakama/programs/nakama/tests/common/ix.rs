@@ -24,6 +24,10 @@ const DISC_CANCEL: [u8; 8] = [232, 219, 223, 41, 219, 236, 220, 190];
 // `charge` discriminator: cross-checked against `target/idl/nakama.json`
 // (instruction "charge".discriminator) on 2026-05-04 after the handler landed.
 const DISC_CHARGE: [u8; 8] = [26, 55, 197, 209, 93, 77, 242, 15];
+// `cleanup` discriminator (ADR-013 cycle-3): cross-checked against
+// `target/idl/nakama.json` (instruction "cleanup".discriminator) on
+// 2026-05-04 after the handler landed.
+const DISC_CLEANUP: [u8; 8] = [36, 158, 31, 187, 253, 37, 68, 210];
 
 // System program id (literal-encoded so we don't pull in solana-sdk-ids).
 fn system_program_id() -> Pubkey {
@@ -237,6 +241,38 @@ pub fn cancel_ix(
         merchant_ata,
         subscriber_ata,
     )
+}
+
+// -- cleanup ---------------------------------------------------------------
+
+/// Build a `cleanup` ix following ADR-013 §"Cleanup handler" Accounts struct
+/// order: subscription (mut, closed) + subscriber (signer, mut). No args.
+pub fn cleanup_ix(subscriber: &Pubkey, subscription: &Pubkey) -> Instruction {
+    cleanup_ix_with_signer(subscriber, subscription, subscriber)
+}
+
+/// Adversarial variant: lets us pass a different signer than the snapshotted
+/// `subscription.subscriber` so we can prove the `has_one = subscriber` /
+/// `UnauthorizedCleanup` guard fires (ADR-013 §Q1).
+///
+/// `signer_pk` goes into the AccountMeta with `is_signer = true`; the program
+/// will compare it against `subscription.subscriber` and raise
+/// `NakamaError::UnauthorizedCleanup` (or Anchor `ConstraintHasOne` if the
+/// declarative path fires first; the test accepts either).
+pub fn cleanup_ix_with_signer(
+    _subscriber_snapshot: &Pubkey,
+    subscription: &Pubkey,
+    signer_pk: &Pubkey,
+) -> Instruction {
+    let data = DISC_CLEANUP.to_vec();
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false), // subscription PDA (mut, closed by Anchor)
+            AccountMeta::new(*signer_pk, true),     // subscriber signer (mut for rent return)
+        ],
+        data,
+    }
 }
 
 pub fn cancel_ix_with_overrides(
