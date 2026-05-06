@@ -24,8 +24,10 @@ pub use accounts::{
 };
 pub use computed_status::{derive_status, ComputedStatus, ACTIVE_LOW_FUNDS_DAYS};
 pub use constants::{
-    ACCOUNT_DISCRIMINATOR_LEN, GRACE_DURATION, GRACE_SEED, PAY_SESSION_SEED, SUB_SEED, VAULT_SEED,
+    ACCOUNT_DISCRIMINATOR_LEN, GRACE_DURATION, GRACE_SEED, PAUSED_SUB_SEED, PAY_SESSION_SEED,
+    SUB_SEED, VAULT_SEED,
 };
 pub use pda::{
-    derive_grace_pda, derive_pay_session_pda, derive_subscription_pda, derive_vault_pda,
+    derive_grace_pda, derive_paused_sub_pda, derive_pay_session_pda, derive_subscription_pda,
+    derive_vault_pda,
 };

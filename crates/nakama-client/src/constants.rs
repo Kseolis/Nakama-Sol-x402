@@ -24,6 +24,10 @@ pub const GRACE_SEED: &[u8] = b"grace";
 /// Grace period duration, seconds (ADR-007 Decision; I-CONST-1).
 pub const GRACE_DURATION: i64 = 7 * 24 * 60 * 60;
 
+/// PausedSubscription satellite PDA seed (ADR-006).
+/// Mirrors `nakama::constants::PAUSED_SUB_SEED`.
+pub const PAUSED_SUB_SEED: &[u8] = b"paused_sub";
+
 /// PaySession satellite PDA seed (ADR-x402-001 §"PaySession PDA Layout").
 /// Mirrors `nakama::constants::PAY_SESSION_SEED`.
 pub const PAY_SESSION_SEED: &[u8] = b"pay_session";

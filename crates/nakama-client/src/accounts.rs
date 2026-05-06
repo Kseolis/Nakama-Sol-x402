@@ -131,24 +131,37 @@ impl GracedSubscriptionView {
     }
 }
 
-/// Stub for the post-MVP `PausedSubscription` satellite (ADR-006 — not
-/// landed). Carrying the type now keeps `derive_status` signature stable
-/// across cycles. The actual layout will be filled in when ADR-006 ships.
+/// Borsh view of `PausedSubscription` (ADR-006 §"Storage layout").
 ///
-/// SAFETY for forward-compat: callers should always pass `None` for this
-/// argument until ADR-006 is merged. `derive_status` already routes the
-/// `Paused` arm purely on the parent's state byte.
-#[derive(Debug, Clone)]
+/// Layout: `subscription: Pubkey (32) + paused_at: i64 (8) + bump: u8 (1)`
+/// = 41 bytes Borsh. On-wire: 8 (discriminator) + 41 = 49 bytes.
+///
+/// Existence is the FSM signal: `subscription.state == Paused ⟺ this PDA
+/// exists`. `derive_status` consumes `Option<PausedSubscriptionView>`
+/// alongside the parent state byte to surface `ComputedStatus::Paused`
+/// with `paused_at` for UX.
+#[derive(Debug, Clone, BorshDeserialize)]
 pub struct PausedSubscriptionView {
-    /// Placeholder — actual fields TBD by ADR-006. Kept private to preserve
-    /// future flexibility.
-    _placeholder: (),
+    pub subscription: Pubkey,
+    pub paused_at: i64,
+    pub bump: u8,
 }
 
 impl PausedSubscriptionView {
-    /// Public constructor for tests / future ADR-006 plumbing.
+    pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
+        let body = strip_discriminator(data)?;
+        Ok(Self::try_from_slice(body)?)
+    }
+
+    /// Backwards-compat constructor for callers that needed a placeholder
+    /// pre-ADR-006-impl (tests / forward-compat plumbing). Now-real fields
+    /// default to zero values.
     pub fn placeholder() -> Self {
-        Self { _placeholder: () }
+        Self {
+            subscription: Pubkey::new_from_array([0u8; 32]),
+            paused_at: 0,
+            bump: 0,
+        }
     }
 }
 
