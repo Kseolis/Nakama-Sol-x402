@@ -26,6 +26,8 @@ export const VAULT_SEED = Buffer.from("vault");
 export const GRACE_SEED = Buffer.from("grace");
 /** ADR-x402-001 §"PaySession PDA Layout" — `b"pay_session"`. */
 export const PAY_SESSION_SEED = Buffer.from("pay_session");
+/** ADR-006 §"Storage layout" — `b"paused_sub"`. */
+export const PAUSED_SUB_SEED = Buffer.from("paused_sub");
 
 /** ADR-007: 7 days, hardcoded — no per-Plan override (rejected alt (f)). */
 export const GRACE_DURATION_SECONDS = 7 * 24 * 60 * 60;
@@ -115,6 +117,26 @@ export function deriveGracedSubscriptionPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [GRACE_SEED, subscription.toBuffer()],
+    programId,
+  );
+}
+
+/**
+ * Derive the PausedSubscription satellite PDA (ADR-006).
+ *
+ * Seeds: `[PAUSED_SUB_SEED, subscription.key().as_ref()]`.
+ *
+ * Lifecycle:
+ *  - init at `pause` (payer = merchant, rent ~0.00091 SOL)
+ *  - close at `resume` (rent → merchant) or `cancel-from-Paused`
+ *    (rent → subscriber per KISS trade-off, see cancel.rs).
+ */
+export function derivePausedSubscriptionPda(
+  programId: PublicKey,
+  subscription: PublicKey,
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [PAUSED_SUB_SEED, subscription.toBuffer()],
     programId,
   );
 }

@@ -12,12 +12,14 @@ export {
   VAULT_SEED,
   GRACE_SEED,
   PAY_SESSION_SEED,
+  PAUSED_SUB_SEED,
   GRACE_DURATION_SECONDS,
   derivePlanPda,
   deriveSubscriptionPda,
   deriveVaultPda,
   deriveGracedSubscriptionPda,
   derivePaySessionPda,
+  derivePausedSubscriptionPda,
 } from "./pdas";
 
 export {
@@ -53,6 +55,10 @@ export {
   buildCloseSessionIx,
   type BuildCloseSessionIxArgs,
 } from "./instructions/closeSession";
+
+export { buildPauseIx, type BuildPauseIxArgs } from "./instructions/pause";
+
+export { buildResumeIx, type BuildResumeIxArgs } from "./instructions/resume";
 
 export {
   deriveStatus,
