@@ -662,3 +662,48 @@ pub fn settle_usage_ix(
         data,
     }
 }
+
+// -- ADR-006 pause / resume ix --------------------------------------------
+
+const DISC_PAUSE: [u8; 8] = [211, 22, 221, 251, 74, 121, 193, 47];
+const DISC_RESUME: [u8; 8] = [1, 166, 51, 170, 127, 32, 141, 206];
+
+/// Build a `pause()` ix.
+///
+/// Wire order (ADR-006 §"Pause handler" Accounts):
+///   subscription (mut), paused_satellite (init mut), merchant (Signer mut),
+///   system_program.
+pub fn pause_ix(merchant: &Pubkey, subscription: &Pubkey) -> Instruction {
+    let data = DISC_PAUSE.to_vec();
+    let (paused_pda, _) = super::paused_sub_pda(subscription);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false),
+            AccountMeta::new(paused_pda, false),
+            AccountMeta::new(*merchant, true),
+            AccountMeta::new_readonly(system_program_id(), false),
+        ],
+        data,
+    }
+}
+
+/// Build a `resume()` ix.
+///
+/// Wire order (ADR-006 §"Resume handler" Accounts):
+///   subscription (mut), paused_satellite (mut, closed), merchant (Signer mut).
+pub fn resume_ix(merchant: &Pubkey, subscription: &Pubkey) -> Instruction {
+    let data = DISC_RESUME.to_vec();
+    let (paused_pda, _) = super::paused_sub_pda(subscription);
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*subscription, false),
+            AccountMeta::new(paused_pda, false),
+            AccountMeta::new(*merchant, true),
+        ],
+        data,
+    }
+}

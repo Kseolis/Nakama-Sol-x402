@@ -223,6 +223,15 @@ pub fn grace_pda(subscription: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[GRACE_SEED, subscription.as_ref()], &program_id())
 }
 
+/// ADR-006 §"Storage layout" — PausedSubscription satellite PDA.
+/// Seeds: `[PAUSED_SUB_SEED, subscription.key().as_ref()]`.
+pub fn paused_sub_pda(subscription: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[nakama::constants::PAUSED_SUB_SEED, subscription.as_ref()],
+        &program_id(),
+    )
+}
+
 /// ADR-x402-001 §"PaySession PDA Layout" — PaySession satellite PDA.
 /// Seeds: `[PAY_SESSION_SEED, subscription.key().as_ref(), &session_id.to_le_bytes()]`.
 pub fn pay_session_pda(subscription: &Pubkey, session_id: u64) -> (Pubkey, u8) {
