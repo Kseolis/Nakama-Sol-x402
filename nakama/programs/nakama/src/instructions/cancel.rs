@@ -26,9 +26,11 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, CloseAccount, Token, TokenAccount, Transfer};
 
-use crate::constants::{GRACE_SEED, SUB_SEED, VAULT_SEED};
+use crate::constants::{GRACE_SEED, PAUSED_SUB_SEED, SUB_SEED, VAULT_SEED};
 use crate::error::NakamaError;
-use crate::state::{GracedSubscription, Subscription, SubscriptionCancelled, SubscriptionState};
+use crate::state::{
+    GracedSubscription, PausedSubscription, Subscription, SubscriptionCancelled, SubscriptionState,
+};
 
 /// Account validation per ADR-013 §"Cancel handler" Accounts struct + ADR-009
 /// §"Constraint shape" polymorphic signer split.
@@ -117,6 +119,25 @@ pub struct Cancel<'info> {
         bump,
     )]
     pub graced_subscription: Option<Account<'info, GracedSubscription>>,
+
+    /// Optional `PausedSubscription` satellite — required iff
+    /// `subscription.state == Paused`. ADR-006 invariant: `state == Paused
+    /// ⟺ satellite exists`. `close = subscriber` mirrors the ADR-009
+    /// rent-flow invariant (vault rent → subscriber regardless of cancel
+    /// actor); merchant absorbs the ~0.00091 SOL satellite rent as cost of
+    /// cancel-from-Paused. The trade-off is documented as a deferral from
+    /// strict ADR-006 §"Symmetry" — the alternative (`close = merchant`)
+    /// requires a non-Option AccountInfo coupled to this Option, which
+    /// Anchor doesn't support cleanly.
+    #[account(
+        mut,
+        close = subscriber,
+        seeds = [PAUSED_SUB_SEED, subscription.key().as_ref()],
+        bump,
+        constraint = paused_subscription.subscription == subscription.key()
+            @ NakamaError::IllegalStateForCancel,
+    )]
+    pub paused_subscription: Option<Account<'info, PausedSubscription>>,
 }
 
 /// ADR-002 §cancel pseudocode (revised 2026-04-27) + ADR-007 §"cancel from
@@ -136,14 +157,17 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         );
     }
 
-    // Step 1 — FSM guard. Cycle-3 reachable: `{Active, GracePeriod}` (ADR-007
-    // §I-CANCEL-4). `Paused` arm reachable post-ADR-006; deferred.
+    // Step 1 — FSM guard. Cycle-6 reachable: `{Active, Paused, GracePeriod}`
+    // (ADR-007 §I-CANCEL-4 + ADR-006 §"Per-state eligibility table" — cancel
+    // from Paused is explicitly allowed as subscriber/merchant escape hatch).
     {
         let sub = &ctx.accounts.subscription;
         require!(
             matches!(
                 sub.state,
-                SubscriptionState::Active | SubscriptionState::GracePeriod
+                SubscriptionState::Active
+                    | SubscriptionState::Paused
+                    | SubscriptionState::GracePeriod
             ),
             NakamaError::IllegalStateForCancel
         );
@@ -167,8 +191,12 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     let current_state = sub_view.state;
     let cancelled_by = ctx.accounts.signer.key();
 
-    // ADR-007 §"cancel from GracePeriod" — `effective_now` clamps the unlocked
-    // calculation when cancelling from Grace.
+    // `effective_now` selection:
+    // - Active     → now (uncapped)
+    // - GracePeriod → min(now, grace_until)  [ADR-007 §"cancel from GracePeriod"]
+    // - Paused      → paused_at              [ADR-006 §"Cancel from Paused" —
+    //                  freeze settle math at the pause moment so merchant
+    //                  doesn't earn during frozen interval]
     let effective_now = match current_state {
         SubscriptionState::Active => now,
         SubscriptionState::GracePeriod => {
@@ -178,6 +206,14 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
                 .as_ref()
                 .ok_or(NakamaError::MissingGraceSatellite)?;
             core::cmp::min(now, grace.grace_until)
+        }
+        SubscriptionState::Paused => {
+            let paused = ctx
+                .accounts
+                .paused_subscription
+                .as_ref()
+                .ok_or(NakamaError::IllegalStateForCancel)?;
+            paused.paused_at
         }
         _ => return err!(NakamaError::IllegalStateForCancel),
     };

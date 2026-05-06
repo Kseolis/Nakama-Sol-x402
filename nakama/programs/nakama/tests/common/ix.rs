@@ -513,6 +513,72 @@ pub fn cancel_ix_with_overrides(
 /// recipient validated by handler against `subscription.subscriber`).
 /// `graced_subscription`: `Some(pda)` makes Anchor run `close = subscriber`;
 /// `None` plants `program_id` placeholder for `allow-missing-optionals`.
+/// Variant for cancel-from-Paused (ADR-006). Wraps cancel_ix_full passing
+/// the PausedSubscription PDA as the trailing optional. Ergonomic helper —
+/// avoids exposing the 8-arg full builder for the common case.
+pub fn cancel_ix_with_paused(
+    signer: &Pubkey,
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    merchant_ata: &Pubkey,
+    subscriber_ata: &Pubkey,
+) -> Instruction {
+    let (paused, _) = super::paused_sub_pda(subscription);
+    cancel_ix_full_with_paused(
+        signer,
+        subscriber,
+        subscription,
+        None,
+        merchant_ata,
+        subscriber_ata,
+        /* graced = */ None,
+        /* paused = */ Some(paused),
+    )
+}
+
+/// Full builder including the ADR-006 PausedSubscription trailing optional.
+/// `graced_subscription`: ADR-007. `paused_subscription`: ADR-006.
+/// Both are trailing `Option<Account<>>` per Anchor `allow-missing-optionals`.
+#[allow(clippy::too_many_arguments)]
+pub fn cancel_ix_full_with_paused(
+    signer: &Pubkey,
+    subscriber: &Pubkey,
+    subscription: &Pubkey,
+    vault_override: Option<Pubkey>,
+    merchant_ata: &Pubkey,
+    subscriber_ata: &Pubkey,
+    graced_subscription: Option<Pubkey>,
+    paused_subscription: Option<Pubkey>,
+) -> Instruction {
+    let vault = vault_override.unwrap_or_else(|| vault_pda(subscription).0);
+    let data = DISC_CANCEL.to_vec();
+
+    let graced_meta = match graced_subscription {
+        Some(pda) => AccountMeta::new(pda, false),
+        None => AccountMeta::new_readonly(program_id(), false),
+    };
+    let paused_meta = match paused_subscription {
+        Some(pda) => AccountMeta::new(pda, false),
+        None => AccountMeta::new_readonly(program_id(), false),
+    };
+
+    Instruction {
+        program_id: program_id(),
+        accounts: vec![
+            AccountMeta::new(*signer, true),
+            AccountMeta::new(*subscription, false),
+            AccountMeta::new(*subscriber, false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new(*merchant_ata, false),
+            AccountMeta::new(*subscriber_ata, false),
+            AccountMeta::new_readonly(token_program_id(), false),
+            graced_meta,
+            paused_meta,
+        ],
+        data,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cancel_ix_full(
     signer: &Pubkey,
