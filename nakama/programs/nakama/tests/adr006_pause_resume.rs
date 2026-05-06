@@ -19,8 +19,8 @@ use anchor_lang::AnchorDeserialize;
 use common::{
     clock,
     error::{assert_nakama_err, NakamaError},
-    fund_actors, ix, paused_sub_pda, plan_pda, send_tx, setup, subscription_pda,
-    token_program_id, vault_pda, Signer, STATE_OFFSET,
+    fund_actors, ix, paused_sub_pda, plan_pda, send_tx, setup, subscription_pda, token_program_id,
+    vault_pda, Signer, STATE_OFFSET,
 };
 
 const T0: i64 = 1_700_000_000;
@@ -41,10 +41,7 @@ fn read_paused_satellite(
     nakama::state::PausedSubscription::deserialize(&mut &data[8..]).expect("decode")
 }
 
-fn setup_active(
-    env: &mut common::TestEnv,
-    actors: &common::Actors,
-) -> solana_pubkey::Pubkey {
+fn setup_active(env: &mut common::TestEnv, actors: &common::Actors) -> solana_pubkey::Pubkey {
     send_tx(
         &mut env.svm,
         &actors.merchant,
@@ -101,10 +98,7 @@ fn pause_initializes_satellite_and_flips_state() {
     assert_eq!(sat.paused_at, T0 + 30, "paused_at = clock at pause");
 
     let sub = env.svm.get_account(&sub_pk).expect("alive");
-    assert_eq!(
-        sub.data[STATE_OFFSET], 1,
-        "state byte = Paused (=1)"
-    );
+    assert_eq!(sub.data[STATE_OFFSET], 1, "state byte = Paused (=1)");
 }
 
 #[test]
@@ -251,10 +245,7 @@ fn resume_from_active_rejected() {
         &[&actors.merchant],
     );
 
-    common::error::assert_anchor_err(
-        result,
-        common::error::anchor_codes::ACCOUNT_NOT_INITIALIZED,
-    );
+    common::error::assert_anchor_err(result, common::error::anchor_codes::ACCOUNT_NOT_INITIALIZED);
 }
 
 #[test]
@@ -401,8 +392,7 @@ fn pause_resume_continuity_invariant() {
     // After resume, stream_start shifted by 170. At T0+250, effective
     // elapsed = 250 - (0 + 170) = 80. Unlocked = 80 * 10 = 800.
     // Merchant got 800 (no double-charge from frozen interval).
-    let merchant_delta =
-        common::token_balance(&env.svm, &actors.merchant_ata) - pre_merchant_usdc;
+    let merchant_delta = common::token_balance(&env.svm, &actors.merchant_ata) - pre_merchant_usdc;
     assert_eq!(
         merchant_delta, 800,
         "merchant earned only effective time (80s × 10 rate), pause time NOT charged"

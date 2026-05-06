@@ -116,4 +116,18 @@ pub mod nakama {
     pub fn settle_usage(ctx: Context<SettleUsage>, amount: u64) -> Result<()> {
         instructions::settle_usage::settle_usage_handler(ctx, amount)
     }
+
+    /// ADR-006 — merchant freezes the stream. State → Paused, satellite
+    /// initialized at `paused_at = now`. Streaming math frozen for the
+    /// duration; charge refuses while Paused.
+    pub fn pause(ctx: Context<Pause>) -> Result<()> {
+        instructions::pause::pause_handler(ctx)
+    }
+
+    /// ADR-006 — merchant resumes the stream. Shifts stream_start by
+    /// `pause_duration` (time-frozen continuity invariant), closes
+    /// satellite (rent → merchant). State → Active.
+    pub fn resume(ctx: Context<Resume>) -> Result<()> {
+        instructions::resume::resume_handler(ctx)
+    }
 }
