@@ -71,6 +71,11 @@ pub enum NakamaError {
     UnauthorizedClose = 30,
     ArithmeticOverflow = 31,
     PaySessionMerchantAtaMismatch = 32,
+    // ADR-006 — Pause / Resume errors. Codes 6033..6036.
+    UnauthorizedPause = 33,
+    IllegalStateForPause = 34,
+    UnauthorizedResume = 35,
+    IllegalStateForResume = 36,
 }
 
 impl NakamaError {

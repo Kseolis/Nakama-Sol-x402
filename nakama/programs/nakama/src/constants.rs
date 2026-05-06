@@ -31,6 +31,11 @@ pub const GRACE_SEED: &[u8] = b"grace";
 /// Hardcoded — no per-Plan override (rejected alternative (f); ADR-007 §Open Q1).
 pub const GRACE_DURATION: i64 = 7 * 24 * 60 * 60;
 
+/// PDA seed for `PausedSubscription` satellite accounts (ADR-006).
+/// Seeds: `[PAUSED_SUB_SEED, subscription.key().as_ref()]`.
+/// See ADR-006 §"Storage layout" — exists ⟺ state == Paused.
+pub const PAUSED_SUB_SEED: &[u8] = b"paused_sub";
+
 /// PDA seed for `PaySession` satellite accounts (ADR-x402-001).
 /// Seeds: `[PAY_SESSION_SEED, subscription.key().as_ref(), &session_id.to_le_bytes()]`.
 /// See ADR-x402-001 §"PaySession PDA Layout" (Q2 — u64 nonce client-gen).

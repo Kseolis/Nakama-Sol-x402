@@ -88,8 +88,7 @@ fn e2e_x402_full_flow_acceptance() {
 
     let pre_subscription_data = env.svm.get_account(&sub_pk).expect("alive").data;
     let pre_state_byte = pre_subscription_data[STATE_OFFSET];
-    let pre_reserved =
-        pre_subscription_data[pre_subscription_data.len() - RESERVED_LEN..].to_vec();
+    let pre_reserved = pre_subscription_data[pre_subscription_data.len() - RESERVED_LEN..].to_vec();
 
     assert_eq!(pre_state_byte, 0, "pre-state Active");
     assert_eq!(pre_reserved, vec![0u8; RESERVED_LEN], "reserved zeroed");
@@ -185,8 +184,7 @@ fn e2e_x402_full_flow_acceptance() {
     // ── Step 5: layout invariant unchanged through 4 ix submissions ──
     let mid_subscription_data = env.svm.get_account(&sub_pk).expect("alive").data;
     let mid_state_byte = mid_subscription_data[STATE_OFFSET];
-    let mid_reserved =
-        mid_subscription_data[mid_subscription_data.len() - RESERVED_LEN..].to_vec();
+    let mid_reserved = mid_subscription_data[mid_subscription_data.len() - RESERVED_LEN..].to_vec();
     assert_eq!(mid_state_byte, 0, "state byte still Active");
     assert_eq!(mid_reserved, pre_reserved, "reserved still zeroed");
     assert_eq!(

@@ -232,4 +232,25 @@ pub enum NakamaError {
     /// ADR-x402-001 §"settle_usage".
     #[msg("merchant_ata does not match the PaySession's snapshotted ATA")]
     PaySessionMerchantAtaMismatch,
+
+    // ── ADR-006 (Pause / Resume satellite layer) ───────────────────────────
+    // Codes 6033..6036. Wire-stable; never reorder.
+    /// `pause` signer != `subscription.merchant`. Authority is merchant-only
+    /// per ADR-006 Q3 — subscriber's escape hatch is `cancel`, not pause.
+    #[msg("Only the subscription's merchant may pause it")]
+    UnauthorizedPause,
+
+    /// FSM guard: `pause` legal only from `Active`. Re-pause from Paused
+    /// rejected explicitly. ADR-006 §"Per-state eligibility table".
+    #[msg("Subscription is not Active; pause not allowed")]
+    IllegalStateForPause,
+
+    /// `resume` signer != `subscription.merchant`. Same authority as pause —
+    /// merchant created the pause, only merchant can lift it.
+    #[msg("Only the subscription's merchant may resume it")]
+    UnauthorizedResume,
+
+    /// FSM guard: `resume` legal only from `Paused`. ADR-006 §"FSM transitions".
+    #[msg("Subscription is not Paused; resume not allowed")]
+    IllegalStateForResume,
 }

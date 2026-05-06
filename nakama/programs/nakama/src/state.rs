@@ -486,3 +486,67 @@ pub struct PaySessionClosed {
     pub rent_returned_to: Pubkey,
     pub timestamp: i64,
 }
+
+// ── ADR-006 — PausedSubscription satellite layer ─────────────────────────
+//
+// Time-frozen pause semantics: `paused_at` lives in a satellite PDA
+// (NOT in Subscription.reserved — that 32 bytes stays untouched per
+// ADR-006 §"Storage layout" decision, preserving x402 forward-compat).
+//
+// INVARIANT: subscription.state == Paused ⟺ PausedSubscription PDA exists.
+// Lifecycle:
+//   pause   → init satellite (paused_at = now), state = Paused
+//   resume  → read paused_at, shift stream_start, close satellite
+//             (rent → merchant who paid)
+//   cancel  → close satellite (rent → merchant), settle uses paused_at
+//             as effective_now
+//
+// Layout: 32 (subscription) + 8 (paused_at) + 1 (bump) = 41 bytes payload
+// (49 with discriminator).
+
+/// PausedSubscription satellite — exists ⟺ Subscription is in Paused state.
+///
+/// Seeds: `[PAUSED_SUB_SEED, subscription.key().as_ref()]`.
+/// Created at `pause` (payer = merchant), closed at `resume` or `cancel`
+/// (rent → merchant per ADR-006 §"Resume handler").
+#[account]
+#[derive(InitSpace)]
+pub struct PausedSubscription {
+    /// Parent Subscription pubkey (back-reference for off-chain joins).
+    /// Defence-in-depth above the PDA seed constraint — handler verifies
+    /// `paused_satellite.subscription == parent.key()`.
+    pub subscription: Pubkey,
+    /// `Clock::get().unix_timestamp` at the moment `pause` was invoked.
+    /// `resume` reads this to compute `pause_duration` and shift
+    /// `stream_start += pause_duration` (time-frozen invariant).
+    pub paused_at: i64,
+    /// PDA bump cache.
+    pub bump: u8,
+}
+
+const _: () = {
+    if PausedSubscription::INIT_SPACE != 41 {
+        panic!("ADR-006 PausedSubscription::INIT_SPACE drift — must be 41 bytes");
+    }
+};
+
+/// Emitted by `pause`. Off-chain indexers track when the merchant freezes
+/// billing. `unlocked_at_pause` snapshot lets analytics show how much was
+/// already earned before the pause.
+#[event]
+pub struct SubscriptionPaused {
+    pub subscription: Pubkey,
+    pub paused_at: i64,
+    pub unlocked_at_pause: u64,
+}
+
+/// Emitted by `resume`. `pause_duration` is the wall-clock interval the
+/// stream was frozen — equals `now - paused_at`. `new_stream_start`
+/// reflects the post-shift anchor (math invariant from ADR-006 §6).
+#[event]
+pub struct SubscriptionResumed {
+    pub subscription: Pubkey,
+    pub resumed_at: i64,
+    pub pause_duration: i64,
+    pub new_stream_start: i64,
+}
