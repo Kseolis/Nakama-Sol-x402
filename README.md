@@ -172,30 +172,8 @@ Nakama-Sol-x402/
 │   ├── nakama-client/               off-chain Rust: PDA derivation, account decoding,
 │   │                                computed_status (FSM read replica for indexers)
 │   └── nakama-x402-facilitator/     axum HTTP harness — POST /settle, /open, /close
-├── clients/ts/                      TypeScript SDK: pdas, instruction builders, types
-├── docs/architecture/               ADR-001…ADR-x402-001 + roadmap + future-work
-└── .claude/                         project rules, agent definitions, ADR pipeline skills
+└── clients/ts/                      TypeScript SDK: pdas, instruction builders, types
 ```
-
-## ADR index
-
-Architecture decisions are written before code. Each ADR was reviewed by an architect agent and a security agent before merge.
-
-| ADR | Subject |
-|---|---|
-| [001](docs/architecture/adr-001-account-model.md) | Account layout, reserved-bytes pattern, no `realloc` law |
-| [002](docs/architecture/adr-002-escrow-ownership.md) | Single escrow, vault as PDA-owned TokenAccount, subscribe + cancel flow |
-| [003](docs/architecture/adr-003-subscription-fsm.md) | Subscription FSM (Active / GracePeriod / Cancelled / Exhausted) |
-| [004](docs/architecture/adr-004-charge-invariants.md) | Streaming math, permissionless charge, grace handover |
-| [005](docs/architecture/adr-005-variable-rate.md) | Variable-rate charging path, deferred from MVP |
-| [006](docs/architecture/adr-006-pause-resume.md) | Pause/Resume with time-frozen continuity, satellite PDA |
-| [007](docs/architecture/adr-007-topup-grace-integration.md) | Top-up from Active and GracePeriod, grace recovery |
-| [008](docs/architecture/adr-008-resubscribe-pattern.md) | Re-subscribe after Cancelled/Exhausted via cleanup tombstone |
-| [009](docs/architecture/adr-009-cancel-by-merchant.md) | Polymorphic cancel — subscriber or merchant signer |
-| [013](docs/architecture/adr-013-cancel-decomposition.md) | Cancel split into settle+refund and cleanup (rent reclaim) |
-| [014](docs/architecture/adr-014-create-plan-invariants.md) | Plan PDA, USDC mint whitelist, merchant signer |
-| [x402-001](docs/architecture/adr-x402-001-pay-session-layer.md) | PaySession satellite, facilitator delegation, composability with charge |
-| [roadmap](docs/architecture/adr-roadmap.md) | ADR sequence and forward-compat notes |
 
 ## Tech stack
 
@@ -207,7 +185,7 @@ Architecture decisions are written before code. Each ADR was reviewed by an arch
 - Off-chain Rust services: `solana-rpc-client` 3.1.x, `tokio` LTS, `axum` (facilitator harness)
 - Workspace release profile: `lto = "fat"`, `codegen-units = 1`, `overflow-checks = true`
 
-AI dev tooling: Claude Code (Opus + Sonnet), with a 7-agent project setup (architect, reviewer, anchor-engineer, off-chain Rust, SDK, test-engineer, security-auditor) and an ADR pipeline that gates every change through architect-reviewer + security-auditor before merge. ADR drafts and review reports are versioned under `docs/architecture/`.
+AI dev tooling: Claude Code (Opus + Sonnet), with a 7-agent project setup (architect, reviewer, anchor-engineer, off-chain Rust, SDK, test-engineer, security-auditor) and an ADR pipeline that gates every change through architect-reviewer + security-auditor before merge.
 
 ## Future work
 
@@ -222,8 +200,6 @@ Deferred from MVP, with a one-line reason each:
 - **Variable-rate plans.** ADR-005 specifies the math; instruction surface is deferred to post-MVP.
 - **Clock drift mitigation.** Streaming math reads `Clock::unix_timestamp` directly; tolerable on Solana but worth hardening in production.
 - **TS SDK `buildCancelIx` is missing the `pausedSubscription` slot.** Surfaced by the e2e demo: Anchor TS auto-resolves the trailing optional via IDL seeds and fails with `AccountNotInitialized 3012` when no `PausedSubscription` exists. The driver script (`clients/ts/scripts/00-full-demo.ts`) calls `program.methods.cancel()` directly with explicit `pausedSubscription: null` as a workaround. Fix is a one-file SDK extension; deferred to post-hackathon to keep submission-day diffs small.
-
-Detailed status of every deferred item: [`docs/architecture/future-work.md`](docs/architecture/future-work.md).
 
 ## License
 
