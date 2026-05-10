@@ -2,7 +2,7 @@
 
 *Same escrow, two billing models on Solana.*
 
-> Solana Frontier hackathon submission · Colosseum · Track: Payments & Remittance · [Русская версия](README.ru.md)
+> Solana Frontier hackathon submission · Colosseum · Track: Payments & Remittance 
 
 A Solana program that funds a single USDC escrow once at subscribe time, then lets two independent billing layers — recurring streaming subscriptions and x402 per-call micropayments — withdraw from the same parent account without double-spending. One signature, one deposit, one source of truth.
 
