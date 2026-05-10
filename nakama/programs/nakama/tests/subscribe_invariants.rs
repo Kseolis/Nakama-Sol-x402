@@ -221,3 +221,56 @@ fn subscribe_with_subscriber_ata_equal_to_vault_rejected() {
     // F-2: assert_any_err is intentional — see doc-comment above.
     common::error::assert_any_err(result);
 }
+
+/// Gap G6 — `price * periods_to_prefund` overflow rejected.
+///
+/// Source: ADR-002 §subscribe step 2 — checked_mul on deposit calc.
+/// Test design Section 2.2 boundary value: `price = u64::MAX / 2 + 1`,
+/// `periods_to_prefund = 3` ⇒ `deposit = price * 3` overflows u64.
+///
+/// **Why P2:** Without `checked_mul`, the deposit silently saturates and
+/// the SPL transfer CPI either succeeds with a wrapped value (tiny deposit)
+/// or fails opaquely with InsufficientFunds. Asserting `MathOverflow` at
+/// the handler level proves the explicit guard is in place.
+///
+/// Note: we use `period = 1` and `price = u64::MAX/2 + 1` to keep
+/// `rate_per_second = price / period` representable (= price), which keeps
+/// the failure point at the multiplication, not at rate computation.
+#[test]
+fn subscribe_deposit_overflow_rejected() {
+    let mut env = setup();
+    let actors = fund_actors(&mut env, 1_000_000);
+
+    let plan_id = 99u64;
+    let huge_price = u64::MAX / 2 + 1; // any *3 overflows
+    send_tx(
+        &mut env.svm,
+        &actors.merchant,
+        &[ix::create_plan_ix(
+            &actors.merchant.pubkey(),
+            &actors.merchant_ata,
+            plan_id,
+            huge_price,
+            1, // period = 1 keeps rate well-defined
+        )],
+        &[&actors.merchant],
+    )
+    .expect("create_plan with huge price");
+
+    let (plan_pk, _) = plan_pda(&actors.merchant.pubkey(), plan_id);
+    let _ = vault_pda(&subscription_pda(&actors.subscriber.pubkey(), &plan_pk).0);
+
+    let result = send_tx(
+        &mut env.svm,
+        &actors.subscriber,
+        &[ix::subscribe_ix(
+            &actors.subscriber.pubkey(),
+            &plan_pk,
+            &actors.subscriber_ata,
+            3, // huge_price * 3 overflows u64
+        )],
+        &[&actors.subscriber],
+    );
+
+    assert_nakama_err::<()>(result, NakamaError::MathOverflow);
+}

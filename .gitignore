@@ -22,3 +22,8 @@ test-ledger/
 .claude/
 /docs/
 /CLAUDE.md
+/.env
+/target/
+
+# Demo runtime artifacts (derivable from re-running clients/ts/scripts/00-full-demo.ts)
+clients/ts/scripts/.demo-stdout.log

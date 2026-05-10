@@ -84,3 +84,39 @@ fn zero_price_rejected() {
     let result = send_tx(&mut env.svm, &actors.merchant, &[ix], &[&actors.merchant]);
     assert_nakama_err::<()>(result, NakamaError::ZeroPrice);
 }
+
+/// Gap G7 — boundary value: maximum price + maximum period accepted.
+///
+/// Source: ADR-014 §validation — guards check only `price > 0` and
+/// `period > 0`. No upper bound exists — proven by accepting `u64::MAX` and
+/// `i64::MAX`. Test design Section 2.1 boundary value.
+///
+/// **Why P2:** Defence-in-depth. If a future revision accidentally adds a
+/// silent upper-bound check (e.g. cast to a smaller type), this test catches
+/// it. Also exercises that the Plan PDA layout has no hidden field that
+/// would overflow at extreme inputs.
+#[test]
+fn max_price_max_period_accepted() {
+    let mut env = setup();
+    let actors = fund_actors(&mut env, 0);
+
+    let plan_id = u64::MAX;
+    let price = u64::MAX;
+    let period = i64::MAX;
+
+    let ix = ix::create_plan_ix(
+        &actors.merchant.pubkey(),
+        &actors.merchant_ata,
+        plan_id,
+        price,
+        period,
+    );
+
+    let result = send_tx(&mut env.svm, &actors.merchant, &[ix], &[&actors.merchant]);
+    result.expect("create_plan with u64::MAX price + i64::MAX period must succeed");
+
+    let (plan_pk, _) = plan_pda(&actors.merchant.pubkey(), plan_id);
+    let acct = env.svm.get_account(&plan_pk).expect("plan account");
+    // Layout invariant unchanged at extreme inputs.
+    assert_eq!(acct.data.len(), 161, "Plan size must remain 161 bytes");
+}
