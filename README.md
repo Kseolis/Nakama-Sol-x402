@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/nakama_logo_and_text.png" alt="Nakama Protocol" width="1480" />
+</p>
+
 # Nakama Protocol
 
 *Same escrow, two billing models on Solana.*
