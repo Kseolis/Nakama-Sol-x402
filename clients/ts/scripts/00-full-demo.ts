@@ -95,13 +95,13 @@ const EXPECTED_SUBSCRIBER_PUBKEY = "EkCQAwbcH46VP7JvEPEnxy2Qqh1BNub7VwtpjXroXEDS
 
 // USDC base units (6 decimals).
 const PRICE = 2_000_000n;       // 2 USDC
-const PERIOD = 60;              // seconds
+const PERIOD = 20;              // seconds
 const PERIODS_TO_PREFUND = 2;   // → 4 USDC locked at subscribe
 const TOP_UP_AMOUNT = 2_000_000n; // +1 period
 const RESERVATION_CAP = 500_000n; // 0.5 USDC
 const SETTLE_AMOUNT_1 = 100_000n; // 0.1 USDC
 const SETTLE_AMOUNT_2 = 150_000n; // 0.15 USDC
-const SLEEP_SECONDS = 65;
+const SLEEP_SECONDS = 25;
 const REQUIRED_BALANCE = 6_000_000n; // subscribe (4) + top_up (2)
 
 // --------------------------------------------------------------------------
@@ -187,6 +187,35 @@ function decodeAnchorError(err: unknown, idl: any): string {
   return e?.message ?? String(err);
 }
 
+// --------------------------------------------------------------------------
+// Pretty CLI output (TTY only). Auto-disables ANSI when piped to file.
+// --------------------------------------------------------------------------
+
+const TTY = process.stdout.isTTY === true;
+const A = {
+  reset: TTY ? "\x1b[0m" : "",
+  bold: TTY ? "\x1b[1m" : "",
+  dim: TTY ? "\x1b[2m" : "",
+  underline: TTY ? "\x1b[4m" : "",
+  red: TTY ? "\x1b[31m" : "",
+  green: TTY ? "\x1b[32m" : "",
+  yellow: TTY ? "\x1b[33m" : "",
+  blue: TTY ? "\x1b[34m" : "",
+  magenta: TTY ? "\x1b[35m" : "",
+  cyan: TTY ? "\x1b[36m" : "",
+  gray: TTY ? "\x1b[90m" : "",
+};
+function paint(code: string, s: string): string {
+  return TTY ? `${code}${s}${A.reset}` : s;
+}
+/** Render a clickable URL. Plain URL text — every modern terminal (Terminal.app,
+ *  iTerm2, VS Code, Wezterm, Hyper, gnome-terminal) makes complete URLs
+ *  Cmd-click / Ctrl-click openable. OSC 8 hyperlinks are skipped — they break
+ *  URL auto-detection in some bash terminals. */
+function link(url: string, _label?: string): string {
+  return paint(A.blue + A.underline, url);
+}
+
 /** Emit `[PHASE N] <ix>: <sig>` + explorer link + free-text + blank. Format
  *  is contractual — Phase 3 of `/demo-e2e` parses these lines verbatim. */
 function printPhase(
@@ -195,10 +224,14 @@ function printPhase(
   sig: string,
   notes: string[],
 ): void {
-  console.log(`[PHASE ${n}] ${ixName}: ${sig}`);
-  console.log(`  link: ${explorerUrl(sig)}`);
+  const url = explorerUrl(sig);
+  const phaseTag = paint(A.bold + A.cyan, `[PHASE ${n}]`);
+  const ix = paint(A.bold + A.green, ixName);
+  const sigShort = paint(A.gray, sig);
+  console.log(`${phaseTag} ${ix}: ${sigShort}`);
+  console.log(`  ${paint(A.dim, "link:")} ${link(url)}`);
   for (const note of notes) {
-    console.log(`  ${note}`);
+    console.log(`  ${paint(A.dim, note)}`);
   }
   console.log("");
 }
@@ -253,13 +286,16 @@ async function main(): Promise<void> {
     merchantProvider,
   ) as unknown as Program<Nakama>;
 
-  console.log("============================================================");
-  console.log(" Nakama Protocol — full demo (devnet)");
-  console.log("============================================================");
-  console.log(`Program:      ${programId.toBase58()}`);
-  console.log(`USDC:         ${USDC_MINT.toBase58()}`);
-  console.log(`Merchant:     ${merchant.publicKey.toBase58()}`);
-  console.log(`Subscriber:   ${subscriber.publicKey.toBase58()}\n`);
+  const bar = "═".repeat(60);
+  console.log(paint(A.bold + A.magenta, bar));
+  console.log(paint(A.bold + A.magenta, " Nakama Protocol ") + paint(A.dim, "— full demo (devnet)"));
+  console.log(paint(A.bold + A.magenta, bar));
+  const programUrl = `https://explorer.solana.com/address/${programId.toBase58()}?cluster=devnet`;
+  console.log(`${paint(A.dim, "Program:    ")} ${paint(A.cyan, programId.toBase58())}`);
+  console.log(`${paint(A.dim, "Explorer:   ")} ${link(programUrl)}`);
+  console.log(`${paint(A.dim, "USDC:       ")} ${paint(A.cyan, USDC_MINT.toBase58())}`);
+  console.log(`${paint(A.dim, "Merchant:   ")} ${paint(A.cyan, merchant.publicKey.toBase58())}`);
+  console.log(`${paint(A.dim, "Subscriber: ")} ${paint(A.cyan, subscriber.publicKey.toBase58())}\n`);
 
   // ── Pre-flight: subscriber USDC balance ──────────────────────────────────
   const subscriberAta = getAssociatedTokenAddressSync(
@@ -350,11 +386,13 @@ async function main(): Promise<void> {
     sessionId,
   );
 
-  console.log("PDAs:");
-  console.log(`  plan         = ${planPda.toBase58()} (plan_id=${planId.toString()})`);
-  console.log(`  subscription = ${subscriptionPda.toBase58()}`);
-  console.log(`  vault        = ${vaultPda.toBase58()}`);
-  console.log(`  pay_session  = ${paySessionPda.toBase58()} (session_id=${sessionId.toString()})\n`);
+  const subUrl = `https://explorer.solana.com/address/${subscriptionPda.toBase58()}?cluster=devnet`;
+  console.log(paint(A.bold + A.yellow, "PDAs:"));
+  console.log(`  ${paint(A.dim, "plan        ")} = ${paint(A.cyan, planPda.toBase58())} ${paint(A.gray, `(plan_id=${planId.toString()})`)}`);
+  console.log(`  ${paint(A.dim, "subscription")} = ${paint(A.cyan, subscriptionPda.toBase58())} ${paint(A.gray, "← watch this account")}`);
+  console.log(`  ${paint(A.dim, "  Explorer  ")} = ${link(subUrl)}`);
+  console.log(`  ${paint(A.dim, "vault       ")} = ${paint(A.cyan, vaultPda.toBase58())}`);
+  console.log(`  ${paint(A.dim, "pay_session ")} = ${paint(A.cyan, paySessionPda.toBase58())} ${paint(A.gray, `(session_id=${sessionId.toString()})`)}\n`);
 
   // ── Phase 1: create_plan (merchant) ──────────────────────────────────────
   {
@@ -439,18 +477,20 @@ async function main(): Promise<void> {
 
   // ── Phase 4: sleep 65s (countdown) ───────────────────────────────────────
   {
-    console.log(`[PHASE 4] sleep ${SLEEP_SECONDS}s — letting streaming math accrue claimable balance...`);
+    console.log(`${paint(A.bold + A.cyan, "[PHASE 4]")} ${paint(A.bold + A.yellow, "sleep")} ${paint(A.gray, `${SLEEP_SECONDS}s — letting streaming math accrue claimable balance...`)}`);
     const ratePerSec = PRICE / BigInt(PERIOD);
     const expectedClaimable = ratePerSec * BigInt(SLEEP_SECONDS);
-    console.log(`  expected claimable after sleep ≈ ${fmtUsdc(expectedClaimable)} (rate × elapsed)`);
+    console.log(`  ${paint(A.dim, `expected claimable after sleep ≈ ${fmtUsdc(expectedClaimable)} (rate × elapsed)`)}`);
     for (let remaining = SLEEP_SECONDS; remaining > 0; remaining--) {
-      // Single-line in-place countdown — avoids spamming the log.
-      process.stdout.write(`  T-${remaining.toString().padStart(2, "0")}s    \r`);
+      // Color shifts cyan → yellow → red as the timer drains, signalling "almost done".
+      const color = remaining > 30 ? A.cyan : remaining > 10 ? A.yellow : A.red;
+      const tag = paint(A.bold + color, `T-${remaining.toString().padStart(2, "0")}s`);
+      process.stdout.write(`  ${tag}    \r`);
       await new Promise((r) => setTimeout(r, 1000));
     }
     process.stdout.write("                       \r");
     lastSuccessfulPhase = "4";
-    console.log(`  sleep complete.`);
+    console.log(`  ${paint(A.green, "sleep complete.")}`);
     console.log("");
   }
 
@@ -680,16 +720,18 @@ async function main(): Promise<void> {
     ]);
   }
 
-  console.log("============================================================");
-  console.log(" Demo complete — all 11 phases landed on devnet.");
-  console.log("============================================================");
+  const bar2 = "═".repeat(60);
+  console.log(paint(A.bold + A.green, bar2));
+  console.log(paint(A.bold + A.green, " ✓ Demo complete — all 11 phases landed on devnet."));
+  console.log(paint(A.bold + A.green, bar2));
 }
 
 main().catch((err) => {
+  const bar3 = "═".repeat(60);
   console.error("");
-  console.error("============================================================");
-  console.error(` DEMO FAILED at phase ${lastSuccessfulPhase} (last successful)`);
-  console.error("============================================================");
+  console.error(paint(A.bold + A.red, bar3));
+  console.error(paint(A.bold + A.red, ` ✗ DEMO FAILED at phase ${lastSuccessfulPhase} (last successful)`));
+  console.error(paint(A.bold + A.red, bar3));
   // Reload IDL to decode error symbol — best-effort.
   let idlForDecode: any = null;
   try {
