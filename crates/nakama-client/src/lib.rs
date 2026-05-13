@@ -16,7 +16,9 @@
 pub mod accounts;
 pub mod computed_status;
 pub mod constants;
+pub mod discriminator;
 pub mod pda;
+pub mod resubscribe;
 
 pub use accounts::{
     AccountDecodeError, GracedSubscriptionView, PausedSubscriptionView, PaySessionView,
@@ -27,7 +29,14 @@ pub use constants::{
     ACCOUNT_DISCRIMINATOR_LEN, GRACE_DURATION, GRACE_SEED, PAUSED_SUB_SEED, PAY_SESSION_SEED,
     SUB_SEED, VAULT_SEED,
 };
+pub use discriminator::{
+    cleanup_discriminator, close_session_discriminator, subscribe_discriminator,
+};
 pub use pda::{
     derive_grace_pda, derive_paused_sub_pda, derive_pay_session_pda, derive_subscription_pda,
     derive_vault_pda,
+};
+pub use resubscribe::{
+    build_resubscribe_ixs, list_alive_pay_sessions, resubscribe_or_subscribe, ResubscribeArgs,
+    ResubscribeError, MAX_INLINE_PAY_SESSION_CLOSES, TX_SIZE_LIMIT_BYTES,
 };
