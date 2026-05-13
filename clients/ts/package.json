@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@anchor-lang/core": "^1.0.1",
-    "@solana/spl-token": "^0.4.9",
+    "@solana/spl-token": "^0.1.8",
     "@solana/web3.js": "^1.95.0",
     "bn.js": "^5.2.1"
   },
