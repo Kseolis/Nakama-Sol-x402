@@ -97,11 +97,11 @@ jobs:
           path: |
             ~/.cargo/bin/anchor
             ~/.local/share/solana
-          key: anchor-1.0.1-solana-2.2.0-${{ runner.os }}
+          key: anchor-1.0.1-agave-3.0.0-${{ runner.os }}
       - name: Install Solana CLI
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v2.2.0/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.0.0/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - name: Add Solana to PATH (cache hit path)
         if: steps.cache-anchor.outputs.cache-hit == 'true'
