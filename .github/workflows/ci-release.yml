@@ -1,0 +1,206 @@
+# Tier-2 CI: stage -> main
+# Implements .claude/rules/ci-gates.md "Tier 2"
+# Goal: nothing un-audited reaches main during hackathon judging.
+# Includes all Tier-1 gates + dependency audit + semgrep + drift checks.
+
+name: CI stage -> main
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-release-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # NOTE: see ci-feature.yml — `-D warnings` per step, not via RUSTFLAGS env.
+
+jobs:
+  # --- Tier 1 gates (mirrored from ci-feature.yml; kept inline for self-containment) ---
+
+  rust-fmt:
+    name: T1-1 Rust fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cd nakama && cargo fmt --all -- --check
+
+  ts-typecheck:
+    name: T1-2 TS typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: clients/ts/package-lock.json
+      - run: cd clients/ts && npm ci
+      - run: cd clients/ts && npx tsc --noEmit
+
+  rust-clippy:
+    name: T1-3 Rust clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            nakama -> nakama/target
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cd nakama && cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-tests:
+    name: T1-4 Rust tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            nakama -> nakama/target
+      - run: cargo test --workspace
+      - run: cd nakama && cargo test --workspace --tests
+
+  anchor-build:
+    name: T1-5 Anchor build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nakama -> nakama/target
+      - name: Cache Anchor + Solana CLI binaries
+        id: cache-anchor
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/anchor
+            ~/.local/share/solana
+          key: anchor-1.0.1-solana-2.0.21-${{ runner.os }}
+      - name: Install Solana CLI
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.0.21/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Add Solana to PATH (cache hit path)
+        if: steps.cache-anchor.outputs.cache-hit == 'true'
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install Anchor CLI
+        if: steps.cache-anchor.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/coral-xyz/anchor --tag v1.0.1 anchor-cli --locked
+      - run: cd nakama && anchor build
+
+  yaml-lint:
+    name: T1-6 actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  # --- Tier 2 gates ---
+
+  cargo-audit:
+    name: T2-1 cargo audit (both workspaces)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      # Block on actual vulnerabilities. Transitive `unmaintained` warnings
+      # (RUSTSEC-2025-0141 `bincode` reachable via solana-*) are accepted —
+      # solana SDK upgrade path tracked separately, not gating release.
+      - name: audit root workspace
+        run: cargo audit --ignore RUSTSEC-2025-0141
+      - name: audit nakama workspace
+        run: cd nakama && cargo audit --ignore RUSTSEC-2025-0141
+
+  semgrep:
+    name: T2-2 Semgrep SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: semgrep/semgrep:1.157.0
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned rulesets (NOT --config=auto, which is non-deterministic — rules
+      # resolved from semgrep.dev at scan time can flip pass/fail without code
+      # change). Homoglyph rule is in p/security-audit but project allows
+      # mixed-script in markdown / .claude / docs (excluded via .semgrepignore).
+      # Rust source is English-only; one Cyrillic doc-comment in TS — acceptable.
+      - name: semgrep scan
+        run: semgrep scan --config=p/rust --config=p/typescript --config=p/secrets --error --severity=ERROR --metrics=off
+
+  # T2-3 IDL drift removed 2026-05-18 — committed-IDL artefact does not exist
+  # (nakama/target/ is gitignored, no nakama/idl/ counterpart). Gate was a
+  # permanent no-op. Re-introduce when an IDL reference is committed.
+
+  adr-ref-integrity:
+    name: T2-4 ADR reference integrity (warn)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check ADR references in source resolve to docs
+        run: |
+          set +e
+          # docs/ is gitignored per project policy (CLAUDE.md / .gitignore /docs/).
+          # If docs/architecture/ is absent in CI checkout, skip silently — the
+          # check is intended for the future state where ADRs become versioned
+          # artefacts. Until then, ADR ref integrity is enforced manually.
+          if [ ! -d docs/architecture ]; then
+            echo "docs/architecture/ not in checkout (gitignored) — skipping ADR ref integrity check"
+            exit 0
+          fi
+          grep -rohE "ADR-[0-9]{3}|ADR-x402-[0-9]{3}" \
+            --include="*.rs" --include="*.ts" \
+            crates clients/ts/src nakama/programs 2>/dev/null \
+            | sort -u \
+            | while IFS= read -r ref; do
+                num="${ref##ADR-}"
+                if ! ls docs/architecture/adr-"$num"-*.md >/dev/null 2>&1; then
+                  echo "::warning ::Reference to $ref found in source but no docs/architecture/adr-${num}-*.md exists"
+                fi
+              done
+
+  conventional-commits:
+    name: T2-5 Conventional commits (warn)
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    continue-on-error: true
+    steps:
+      - name: Validate PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          REGEX='^(feat|fix|chore|docs|test|refactor|style|perf|ci|build|revert)(\(.+\))?: .+'
+          if ! printf '%s' "$PR_TITLE" | grep -qE "$REGEX"; then
+            echo "::warning ::PR title '$PR_TITLE' does not match conventional-commits format"
+            echo "Expected: type(scope): description, type in {feat,fix,chore,docs,test,refactor,style,perf,ci,build,revert}"
+          fi
