@@ -29,7 +29,7 @@ mainnet = []
 # `cancel` likewise. Trade-off: NEVER add a required account after an optional
 # one in any `Accounts` struct (see lib.rs head doc-comment).
 # Verified: anchor-lang-1.0.1/src/accounts/option.rs:28-41.
-anchor-lang = { version = "1.0.1", features = ["allow-missing-optionals"] }
+anchor-lang = { version = "1.0.2", features = ["allow-missing-optionals"] }
 # anchor-spl gives us Token program client + TokenAccount/Mint accounts.
 # Required for vault TokenAccount, transfer/close_account CPIs in subscribe/cancel.
 # https://docs.rs/anchor-spl/1.0.1/
