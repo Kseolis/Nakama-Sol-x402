@@ -71,9 +71,9 @@ jobs:
         run: cd nakama && cargo clippy --workspace --all-targets -- -D warnings
 
   rust-tests:
-    name: T1-4 Rust tests (149 across both workspaces)
+    name: T1-4 Rust tests (both workspaces)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -82,6 +82,24 @@ jobs:
           workspaces: |
             . -> target
             nakama -> nakama/target
+      # LiteSVM tests load nakama.so via `add_program_from_file` (see
+      # nakama/programs/nakama/tests/common/mod.rs:84). The .so is BPF-target
+      # output, not produced by `cargo test`. Use `cargo build-sbf` (provided
+      # by Solana CLI 2.0.21) — lighter than full anchor build, only ~5 min
+      # cold install, ~10 sec warm via cache.
+      - name: Cache Solana CLI
+        id: cache-solana
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: solana-2.0.21-${{ runner.os }}
+      - name: Install Solana CLI
+        if: steps.cache-solana.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.0.21/install)"
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Build BPF program (.so artifact for LiteSVM tests)
+        run: cd nakama && cargo build-sbf
       - name: cargo test off-chain
         run: cargo test --workspace
       - name: cargo test on-chain (LiteSVM)
