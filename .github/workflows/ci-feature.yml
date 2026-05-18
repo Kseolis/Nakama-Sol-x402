@@ -92,10 +92,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/solana
-          key: solana-2.0.21-${{ runner.os }}
+          key: solana-2.2.0-${{ runner.os }}
       - name: Install Solana CLI
         if: steps.cache-solana.outputs.cache-hit != 'true'
-        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.0.21/install)"
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v2.2.0/install)"
       - name: Add Solana to PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - name: Build BPF program (.so artifact for LiteSVM tests)
