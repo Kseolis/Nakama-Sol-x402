@@ -1,0 +1,46 @@
+# Dependabot configuration — target stage branch (not main).
+# Per .github/CI-POLICY.md "Branch topology": only stage->main PRs allowed
+# to main. Dependabot PRs land on stage and merge via the normal flow.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: stage
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+
+  - package-ecosystem: cargo
+    directory: /nakama
+    schedule:
+      interval: weekly
+    target-branch: stage
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+      - on-chain
+
+  - package-ecosystem: npm
+    directory: /clients/ts
+    schedule:
+      interval: weekly
+    target-branch: stage
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - typescript
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    target-branch: stage
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - github-actions
