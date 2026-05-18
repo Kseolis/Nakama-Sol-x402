@@ -77,7 +77,18 @@ detection of transitive RUSTSEC advisory drift between PRs.
 
 ## Branch protection (manual setup)
 
-CI workflows do NOT auto-enforce protection. Repo admin runs (one-time):
+**Constraint**: Branch protection on private repositories requires GitHub Pro
+or Team plan (HTTP 403 on free private). Three options for repos on the
+free tier:
+
+1. Upgrade to GitHub Pro (~$4/mo per user) — unlocks branch protection on
+   private repos.
+2. Make the repository public — Colosseum hackathon submission norm.
+3. Use PR-process discipline as a soft gate — workflows still run on PRs
+   and surface failures visually; reviewer enforces "no merge with red CI".
+
+CI workflows do NOT auto-enforce protection. Once unlocked, repo admin runs
+(one-time):
 
 ```bash
 gh api -X PUT repos/{owner}/{repo}/branches/stage/protection \
