@@ -166,11 +166,7 @@ fn settle_usage_after_cancel_rejected() {
     cancel_to_tombstone(&mut env, &actors, &sub_pk);
 
     // Sanity: state byte at offset 192 == 4 (Cancelled).
-    let state_byte = env
-        .svm
-        .get_account(&sub_pk)
-        .expect("tombstone alive")
-        .data[STATE_OFFSET];
+    let state_byte = env.svm.get_account(&sub_pk).expect("tombstone alive").data[STATE_OFFSET];
     assert_eq!(state_byte, 4, "parent must be in Cancelled state");
 
     // Attempt settle_usage on the tombstoned parent.

@@ -7,10 +7,39 @@ license.workspace = true
 description = "Off-chain typed bindings + ComputedStatus decoder for Nakama Protocol (ADR-007)."
 
 [dependencies]
+# Lightweight on-chain layout mirrors (Phase 1, lib.rs doc-comment).
 solana-pubkey = { workspace = true }
 borsh = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+# Composite-tx builder surface (ADR-008 §"Implementation impact" — Rust
+# mirror of `clients/ts/src/instructions/resubscribe.ts`). RPC + signing
+# deps land here because the public API exposes both pure builders AND an
+# async `resubscribe_or_subscribe(rpc, args)` wrapper that consumes the
+# nonblocking RpcClient. The keeper / x402 facilitator / integration
+# scripts share these via re-export from this crate's `resubscribe` module.
+solana-rpc-client = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+solana-instruction = { workspace = true }
+solana-signer = { workspace = true }
+solana-keypair = { workspace = true }
+solana-message = { workspace = true }
+solana-transaction = { workspace = true }
+solana-commitment-config = { workspace = true }
+solana-account = { workspace = true }
+
+# spl-associated-token-account — derive subscriber's USDC ATA for subscribe
+# without an extra RPC roundtrip. We use the address helper only; no
+# program-side surface needed.
+spl-associated-token-account = { workspace = true }
+
+# Anchor 1.0 instruction discriminator = sha256("global:<ix>")[..8].
+# Computed once per process (OnceLock), no anchor-client dep pulled in.
+sha2 = { workspace = true }
+
+# UiAccountData::Binary(String, Base64) → Vec<u8> decode.
+base64 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

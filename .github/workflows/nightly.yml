@@ -1,0 +1,39 @@
+# Nightly regression on stage HEAD.
+# Implements .claude/rules/ci-gates.md "Iteration policy" — early detection
+# of transitive vuln / RUSTSEC advisory drift while no PR is open.
+
+name: Nightly stage audit
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 03:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (stage HEAD)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage
+      - run: rustup show
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --ignore RUSTSEC-2025-0141
+      - run: cd nakama && cargo audit --ignore RUSTSEC-2025-0141
+
+  semgrep:
+    name: semgrep (stage HEAD)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: semgrep/semgrep:1.157.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: stage
+      - run: semgrep scan --config=p/rust --config=p/typescript --config=p/secrets --error --severity=ERROR --metrics=off

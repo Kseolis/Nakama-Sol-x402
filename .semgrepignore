@@ -1,0 +1,31 @@
+# Semgrep exclusions for Nakama Protocol.
+# Implements .claude/rules/ci-gates.md "T2-2 design constraint".
+#
+# Project mixes Russian prose (docs / comments / commit messages) with
+# English code per CLAUDE.md "Output conventions". Semgrep's homoglyph
+# rule (Cyrillic + Latin) fires on every Cyrillic character — this is
+# intentional, not an attack vector. We scan code, not prose.
+
+# Markdown / documentation
+*.md
+docs/
+.claude/
+
+# Build artifacts (target dirs already in .gitignore but defensive)
+target/
+nakama/target/
+node_modules/
+clients/ts/dist/
+
+# Lockfiles (not code)
+Cargo.lock
+clients/ts/package-lock.json
+clients/ts/yarn.lock
+
+# Test fixtures
+**/test-ledger/
+**/*.json.bak
+
+# IDE / OS
+.idea/
+.DS_Store

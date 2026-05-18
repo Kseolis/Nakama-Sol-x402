@@ -61,6 +61,16 @@ export { buildPauseIx, type BuildPauseIxArgs } from "./instructions/pause";
 export { buildResumeIx, type BuildResumeIxArgs } from "./instructions/resume";
 
 export {
+  buildResubscribeIxs,
+  findAlivePaySessions,
+  resubscribeOrSubscribe,
+  type BuildResubscribeIxsArgs,
+  type ResubscribeOrSubscribeArgs,
+  type ResubscribeOrSubscribeResult,
+  type AlivePaySession,
+} from "./instructions/resubscribe";
+
+export {
   deriveStatus,
   normalizeSubscriptionAccount,
   type ComputedStatus,
