@@ -1311,10 +1311,22 @@ dependencies = [
 name = "nakama-client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "borsh",
  "serde",
  "serde_json",
+ "sha2",
+ "solana-account",
+ "solana-commitment-config",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-message",
  "solana-pubkey 3.0.0",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-signer",
+ "solana-transaction",
+ "spl-associated-token-account",
  "thiserror 2.0.18",
 ]
 
