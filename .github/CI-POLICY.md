@@ -26,11 +26,19 @@ Fast feedback gates. All blocking.
 | T1-1 | `cargo fmt --check` (both workspaces) | `ci-feature.yml` |
 | T1-2 | `tsc --noEmit` strict | `ci-feature.yml` |
 | T1-3 | `cargo clippy --all-targets -- -D warnings` (both ws) | `ci-feature.yml` |
-| T1-4 | `cargo test --workspace` (both ws) | `ci-feature.yml` |
+| T1-4 | `cargo test --workspace` (root / off-chain only) | `ci-feature.yml` |
 | T1-6 | `actionlint .github/workflows/*.yml` | `ci-feature.yml` |
 
-T1-5 anchor build runs only in Tier-2 — install cost (~8 min cargo install
-of anchor-cli) breaks the Tier-1 12-min P95 budget.
+T1-5 anchor build runs only in Tier-2. Two reasons:
+
+1. Install cost (~8 min `cargo install` of anchor-cli) breaks Tier-1's P95 budget.
+2. On-chain LiteSVM integration tests in `nakama/programs/nakama/tests/` load
+   the BPF binary (`nakama.so`) — producing it requires `cargo build-sbf`,
+   currently blocked by a pre-existing toolchain mismatch (Solana CLI bundled
+   cargo 1.84 lacks `edition2024` stabilized in Rust 1.85, but transitive
+   deps `base64ct 1.8.3` and `wincode 0.5.3` require it). On-chain coverage
+   moves entirely to Tier-2 anchor-build job until the toolchain ships
+   modern cargo.
 
 ## Tier 2 — stage → main
 

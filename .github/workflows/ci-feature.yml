@@ -71,9 +71,9 @@ jobs:
         run: cd nakama && cargo clippy --workspace --all-targets -- -D warnings
 
   rust-tests:
-    name: T1-4 Rust tests (both workspaces)
+    name: T1-4 Rust off-chain tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -84,20 +84,17 @@ jobs:
             nakama -> nakama/target
       - name: cargo test off-chain
         run: cargo test --workspace
-      # LiteSVM tests load nakama.so via `add_program_from_file` (see
-      # nakama/programs/nakama/tests/common/mod.rs:84). Building the .so in
-      # Tier-1 is blocked by a pre-existing toolchain mismatch: agave 3.0.0
-      # bundled cargo (1.84) lacks `edition2024` (stabilized Rust 1.85),
-      # but transitive deps (`base64ct 1.8.3`, `wincode 0.5.3`) require it.
-      # Tracked separately; full anchor build runs in Tier-2 (stage→main).
-      # In Tier-1 we skip the 3 tests that hard-require the .so binary:
-      #   - merchant_cancels_from_paused_polymorphic
-      #   - cancel_from_paused_without_satellite_rejected
-      #   - subscriber_cancels_from_paused_settles_at_paused_at
-      # All three are in adr006_cancel_from_paused.rs and re-covered by
-      # Tier-2 anchor build job. Filter via test-name substring.
-      - name: cargo test on-chain (LiteSVM)
-        run: cd nakama && cargo test --workspace --tests -- --skip cancel_from_paused --skip merchant_cancels_from_paused --skip subscriber_cancels_from_paused
+      # LiteSVM integration tests in the `nakama` workspace load `nakama.so`
+      # via `add_program_from_file` (programs/nakama/tests/common/mod.rs:104).
+      # Building the .so requires Solana's BPF toolchain (`cargo build-sbf`),
+      # currently blocked by a transitive-deps × bundled-cargo edition2024
+      # mismatch — bundled cargo on agave 3.0.0 (latest) is 1.84, but deps
+      # like `base64ct 1.8.3` and `wincode 0.5.3` require Rust 1.85 features.
+      # On-chain LiteSVM coverage is fully exercised by the Tier-2 anchor
+      # build job (ci-release.yml T1-5) on stage→main release-cut PRs.
+      # Tier-1 covers off-chain Rust only — that already exercises the
+      # majority of changeable surface (SDK builders, x402 facilitator,
+      # keeper math). Long-term: revisit when Solana CLI ships modern cargo.
 
   # T1-5 anchor-build moved to Tier-2 (ci-release.yml) — Anchor CLI install
   # via `cargo install --git` is ~8 min uncached, exceeds Tier-1 P95 12-min
