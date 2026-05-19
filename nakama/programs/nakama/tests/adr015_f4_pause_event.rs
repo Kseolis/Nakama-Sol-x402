@@ -19,9 +19,7 @@ mod common;
 use anchor_lang::AnchorDeserialize;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
-use common::{
-    clock, fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer,
-};
+use common::{clock, fund_actors, ix, plan_pda, send_tx, setup, subscription_pda, Signer};
 
 const T0: i64 = 1_700_000_000;
 

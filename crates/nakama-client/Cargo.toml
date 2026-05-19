@@ -28,6 +28,10 @@ solana-message = { workspace = true }
 solana-transaction = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-account = { workspace = true }
+# ADR-005 `build_change_rate_tx` accepts a recent blockhash as a typed
+# `Hash`. We avoid wrapping the byte-array in a custom newtype so the
+# caller can pass `rpc.get_latest_blockhash().await?` straight through.
+solana-hash = { workspace = true }
 
 # spl-associated-token-account — derive subscriber's USDC ATA for subscribe
 # without an extra RPC roundtrip. We use the address helper only; no

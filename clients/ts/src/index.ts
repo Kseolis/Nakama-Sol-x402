@@ -71,6 +71,12 @@ export {
 } from "./instructions/resubscribe";
 
 export {
+  buildChangeRateTx,
+  type ChangeRateOptions,
+  type ChangeRateError,
+} from "./instructions/changeRate";
+
+export {
   deriveStatus,
   normalizeSubscriptionAccount,
   type ComputedStatus,

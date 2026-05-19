@@ -297,6 +297,42 @@ impl PausedSubscriptionView {
     }
 }
 
+/// Borsh view of `Plan` (`state.rs:80-99`, ADR-001 §Plan account).
+///
+/// On-wire size: 8 (discriminator) + 153 (Borsh body) = 161 bytes. Plan is
+/// **immutable post-init** (ADR-001) — there is no `update_plan` ix; rate
+/// changes ship a fresh Plan (ADR-005 §"Decision"). We mirror only the
+/// fields ADR-005 §Q5 cares about for the same-mint check; the rest are
+/// included because Borsh deserialization is positional and dropping a
+/// field mid-struct corrupts everything downstream.
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct PlanView {
+    pub merchant: Pubkey,
+    pub plan_id: u64,
+    pub price: u64,
+    pub period: i64,
+    pub token_mint: Pubkey,
+    pub merchant_ata: Pubkey,
+    pub bump: u8,
+    pub reserved: [u8; 32],
+}
+
+impl PlanView {
+    /// Anchor discriminator for `Plan`.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("Plan")
+    }
+
+    /// Strict decode — ADR-015 §F5. Validates `account.owner == program_id`
+    /// and the 8-byte discriminator BEFORE Borsh.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
+    }
+}
+
 /// Borsh view of `PaySession` (ADR-x402-001 §"PaySession PDA Layout").
 ///
 /// Layout (202 bytes Borsh, 210 with 8-byte discriminator):

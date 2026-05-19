@@ -14,6 +14,7 @@
 //! - `nakama/programs/nakama/src/state.rs` (canonical on-chain layout)
 
 pub mod accounts;
+pub mod change_rate;
 pub mod computed_status;
 pub mod constants;
 pub mod discriminator;
@@ -22,15 +23,17 @@ pub mod resubscribe;
 
 pub use accounts::{
     decode_program_owned, AccountDecodeError, GracedSubscriptionView, PausedSubscriptionView,
-    PaySessionView, SubscriptionStateByte, SubscriptionView,
+    PaySessionView, PlanView, SubscriptionStateByte, SubscriptionView,
 };
+pub use change_rate::{build_change_rate_tx, ChangeRateError, ChangeRateOptions};
 pub use computed_status::{derive_status, ComputedStatus, ACTIVE_LOW_FUNDS_DAYS};
 pub use constants::{
     ACCOUNT_DISCRIMINATOR_LEN, GRACE_DURATION, GRACE_SEED, PAUSED_SUB_SEED, PAY_SESSION_SEED,
     SUB_SEED, VAULT_SEED,
 };
 pub use discriminator::{
-    cleanup_discriminator, close_session_discriminator, subscribe_discriminator,
+    cancel_discriminator, cleanup_discriminator, close_session_discriminator,
+    subscribe_discriminator,
 };
 pub use pda::{
     derive_grace_pda, derive_paused_sub_pda, derive_pay_session_pda, derive_subscription_pda,

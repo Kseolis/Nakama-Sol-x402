@@ -41,6 +41,14 @@ pub fn close_session_discriminator() -> [u8; 8] {
     *DISC.get_or_init(|| compute(b"close_session"))
 }
 
+/// `cancel` instruction discriminator (ADR-013 §"Cancel handler" + ADR-009
+/// polymorphic-signer extension). Args: none — handler reads everything
+/// from the snapshotted Subscription.
+pub fn cancel_discriminator() -> [u8; 8] {
+    static DISC: OnceLock<[u8; 8]> = OnceLock::new();
+    *DISC.get_or_init(|| compute(b"cancel"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
