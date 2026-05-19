@@ -63,12 +63,25 @@ pub fn pause_handler(ctx: Context<Pause>) -> Result<()> {
     let sub_view = &ctx.accounts.subscription;
     require!(now >= sub_view.stream_start, NakamaError::ClockBackwards);
 
-    // Compute unlocked-at-pause for the analytics event (ADR-002 streaming
-    // math, mirror of charge §3).
+    // ADR-015 §F4 mirror — `unlocked_at_pause` is an analytics-only event
+    // field, but it must agree with the precise lazy-division math used by
+    // `charge` / `cancel` / `settle_usage`, else off-chain accounting drifts
+    // by `(price mod period) / period` per second (~22-28% on USDC monthly
+    // plans). `rate_per_second` is no longer authoritative for unlock math
+    // (truncated by integer division at subscribe); the field is retained as
+    // an advisory hint per ADR-015 §F4 closing paragraph.
+    //
+    // Defensive guard mirrors the charge handler: the snapshot is immutable
+    // post-subscribe and subscribe enforces `Plan.period > 0`, so this is
+    // unreachable on a well-formed account.
+    require!(sub_view.period > 0, NakamaError::InvalidPeriod);
     let elapsed = (now - sub_view.stream_start) as u64;
     let unlocked_unbounded = (elapsed as u128)
-        .checked_mul(sub_view.rate_per_second as u128)
+        .checked_mul(sub_view.price as u128)
+        .ok_or(NakamaError::MathOverflow)?
+        .checked_div(sub_view.period as u128)
         .ok_or(NakamaError::MathOverflow)?;
+    // After `min`, the value is ≤ `deposited_amount` ≤ u64::MAX — cast safe.
     let unlocked = u128::min(unlocked_unbounded, sub_view.deposited_amount as u128) as u64;
 
     let sub_pubkey = sub_view.key();

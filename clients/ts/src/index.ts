@@ -75,3 +75,13 @@ export {
   normalizeSubscriptionAccount,
   type ComputedStatus,
 } from "./computedStatus";
+
+// F5-mirror (ADR-015 §F5) — owner-check trust boundary for off-chain
+// RPC reads. Mirror of `crates/nakama-client/src/accounts.rs`.
+export {
+  ANCHOR_DISCRIMINATOR_LEN,
+  AccountFetchError,
+  decodeProgramOwnedAccount,
+  fetchProgramOwnedAccount,
+  fetchProgramOwnedAccountNullable,
+} from "./accounts";

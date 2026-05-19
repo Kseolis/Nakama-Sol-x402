@@ -179,10 +179,14 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     require!(now >= sub_view.stream_start, NakamaError::ClockBackwards);
 
     // Snapshot the math inputs before borrowing the account mutably.
+    // ADR-015 §F4 — read `price` / `period` directly; `rate_per_second`
+    // (truncated at subscribe) is no longer authoritative for unlock math.
     let stream_start = sub_view.stream_start;
     let deposited_amount = sub_view.deposited_amount;
     let withdrawn_amount = sub_view.withdrawn_amount;
-    let rate_per_second = sub_view.rate_per_second;
+    let price = sub_view.price;
+    let period = sub_view.period;
+    require!(period > 0, NakamaError::InvalidPeriod);
     let subscription_bump = sub_view.bump;
     let subscription_pubkey = sub_view.key();
     let subscriber_pubkey = sub_view.subscriber;
@@ -221,9 +225,16 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
     require!(effective_now >= stream_start, NakamaError::ClockBackwards);
 
     // Step 4–6 — pro-rata math against `effective_now`.
+    // ADR-015 §F4 lazy precise division: `unlocked = (elapsed * price) / period`.
+    // Single divide at the end yields exact result; merchant settle on
+    // partial period no longer under-pays by `(price mod period)/period`
+    // base units/sec. u128 intermediate guards against overflow on
+    // multi-year cancellations.
     let elapsed = (effective_now - stream_start) as u64;
     let unlocked_u128 = (elapsed as u128)
-        .checked_mul(rate_per_second as u128)
+        .checked_mul(price as u128)
+        .ok_or(NakamaError::MathOverflow)?
+        .checked_div(period as u128)
         .ok_or(NakamaError::MathOverflow)?;
     let cap_u128 = deposited_amount as u128;
     let unlocked = u128::min(unlocked_u128, cap_u128) as u64;

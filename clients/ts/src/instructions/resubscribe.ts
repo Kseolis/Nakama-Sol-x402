@@ -50,6 +50,10 @@ import {
   deriveSubscriptionPda,
   deriveVaultPda,
 } from "../pdas";
+import {
+  AccountFetchError,
+  decodeProgramOwnedAccount,
+} from "../accounts";
 
 // ─────────────────────────────────────────────────────────────────────────
 // Constants and offsets
@@ -544,16 +548,51 @@ export async function resubscribeOrSubscribe(
 /**
  * Read the Subscription PDA and decode its FSM state byte, or return
  * `null` if the account does not exist.
+ *
+ * F5-mirror (ADR-015 §F5): the previous implementation used
+ * `program.account.subscription.fetchNullable(...)` which validates
+ * the Anchor discriminator inside the decoder but does NOT validate
+ * `account.owner == program.programId`. A hostile RPC proxy could
+ * forge bytes that Borsh-decode cleanly but originate from a different
+ * program. The trust-boundary helper closes that gap.
+ *
+ * @throws `AccountFetchError` with kind `WrongAccountOwner` if RPC
+ * returns an account owned by anyone other than the Nakama program.
  */
 async function fetchSubscriptionState(
   program: Program<Nakama>,
   subscriptionPda: PublicKey,
 ): Promise<SubscriptionState | null> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const raw = await (program.account as any).subscription.fetchNullable(
-    subscriptionPda,
-  );
-  if (raw === null) return null;
+  const connection: Connection | undefined = (
+    program.provider as unknown as { connection?: Connection }
+  ).connection;
+  if (!connection) {
+    throw new Error(
+      "Program provider has no `connection` — cannot fetch Subscription state.",
+    );
+  }
+  const info = await connection.getAccountInfo(subscriptionPda, "confirmed");
+  if (info === null) return null;
+  // Anchor's `coder.accounts.decode` validates the Anchor discriminator
+  // internally — we pass `null` for `expectedDiscriminator` to avoid
+  // double-validation. Owner check still fires before decode.
+  let raw: { state: unknown };
+  try {
+    raw = decodeProgramOwnedAccount(
+      info,
+      program.programId,
+      null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (data: Buffer) => (program.coder as any).accounts.decode("Subscription", data),
+    );
+  } catch (err) {
+    if (err instanceof AccountFetchError) {
+      // Re-throw verbatim so callers can pattern-match on `.kind`.
+      throw err;
+    }
+    throw err;
+  }
   const state = decodeSubscriptionState(raw.state);
   if (state === null) {
     throw new Error(

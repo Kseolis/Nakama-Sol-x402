@@ -48,3 +48,10 @@ serde_json = { workspace = true }
 borsh = { workspace = true }
 bs58 = { workspace = true }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# `tower::ServiceExt::oneshot` drives the router in integration tests
+# without binding a real TCP socket (ADR-015 §F3 regression suite).
+tower = { version = "0.5", features = ["util"] }
+# `solana_account::Account` constructor for the F5 owner-check tests.
+solana-account = { workspace = true }

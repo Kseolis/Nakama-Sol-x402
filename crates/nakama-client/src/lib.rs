@@ -21,8 +21,8 @@ pub mod pda;
 pub mod resubscribe;
 
 pub use accounts::{
-    AccountDecodeError, GracedSubscriptionView, PausedSubscriptionView, PaySessionView,
-    SubscriptionStateByte, SubscriptionView,
+    decode_program_owned, AccountDecodeError, GracedSubscriptionView, PausedSubscriptionView,
+    PaySessionView, SubscriptionStateByte, SubscriptionView,
 };
 pub use computed_status::{derive_status, ComputedStatus, ACTIVE_LOW_FUNDS_DAYS};
 pub use constants::{

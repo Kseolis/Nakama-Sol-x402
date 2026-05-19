@@ -155,6 +155,18 @@ pub struct Subscription {
     /// Cumulative merchant settlements — **monotonic** (ADR-002 §Идемпотентность).
     pub withdrawn_amount: u64,
     /// `price / period` snapshotted at subscribe; fixed for life. ADR-002.
+    ///
+    /// **ADR-015 §F4 advisory deprecation.** No longer authoritative for
+    /// on-chain unlock math — `charge`, `cancel`, and `settle_usage` now
+    /// compute `unlocked = (elapsed * price) / period` directly, giving
+    /// full precision (rate_per_second was integer-truncated and under-paid
+    /// the merchant by up to `(price mod period)/period` base units/sec).
+    /// The field is preserved as a non-authoritative display hint for
+    /// off-chain consumers (computed_status, indexer ergonomics) and to
+    /// preserve the byte layout per ADR-001 reserved-bytes law (no `realloc`,
+    /// no field removal). The `ZeroRatePerSecond` smoke-test guard in
+    /// `subscribe` is retained — it now serves as misconfigured-plan
+    /// rejection (period > price) but is not load-bearing.
     pub rate_per_second: u64,
     /// First deposit timestamp; `unlocked` math anchors here. ADR-002.
     pub stream_start: i64,

@@ -23,6 +23,7 @@ pub async fn handle(
 
     let rpc = &state.inner.rpc;
     let commitment = CommitmentConfig::confirmed();
+    let program_id = state.inner.config.program_id;
 
     // Read parent Subscription. `get_account_with_commitment` returns
     // `Response<Option<Account>>`; verified via `cargo info solana-rpc-client`
@@ -34,21 +35,25 @@ pub async fn handle(
         .value
         .ok_or_else(|| ApiError::NotFound(format!("subscription account not found: {sub_pda}")))?;
 
-    let subscription = nakama_client::SubscriptionView::try_decode(&sub_account.data)?;
+    // ADR-015 §F5: owner + discriminator guard. Without it the handler
+    // would happily decode arbitrary System-owned bytes at the requested
+    // PDA address and publish a spoofed ComputedStatus.
+    let subscription = nakama_client::SubscriptionView::decode_owned(&sub_account, &program_id)?;
 
     // Pre-derive the GracedSubscription PDA. We always look it up — if the
     // satellite doesn't exist (state != GracePeriod), `value` is None and
     // we pass None to `derive_status`. This is the discriminator-based
     // dispatch the agent rules mandate.
-    let (grace_pda, _grace_bump) = derive_grace_pda(&state.inner.config.program_id, &sub_pda);
+    let (grace_pda, _grace_bump) = derive_grace_pda(&program_id, &sub_pda);
     let grace_account = rpc
         .get_account_with_commitment(&grace_pda, commitment)
         .await?
         .value;
 
     let graced_view = match grace_account {
-        Some(acc) => Some(nakama_client::GracedSubscriptionView::try_decode(
-            &acc.data,
+        Some(acc) => Some(nakama_client::GracedSubscriptionView::decode_owned(
+            &acc,
+            &program_id,
         )?),
         None => None,
     };

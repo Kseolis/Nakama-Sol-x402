@@ -46,40 +46,74 @@ Full schema: [`OPENAPI.yaml`](./OPENAPI.yaml).
 ## Run locally
 
 ```bash
-# Default config (devnet RPC, port 8080, hardcoded program ID).
+# Default config (devnet RPC, port 8080 loopback, hardcoded program ID).
+# NAKAMA_FACILITATOR_API_KEY is REQUIRED — the binary refuses to start
+# without it (ADR-015 §F3). Generate one with `openssl rand -hex 32`.
+NAKAMA_FACILITATOR_API_KEY=$(openssl rand -hex 32) \
 NAKAMA_READ_DEMO_KEYPAIR_FROM_STDIN=1 \
   cargo run -p nakama-x402-facilitator < ~/.config/solana/id.json
 ```
 
 Available env vars:
 
+* `NAKAMA_FACILITATOR_API_KEY` — **REQUIRED**. Shared bearer token enforced
+  on all protected routes (`/top-up`, `/computed-status`). The facilitator
+  refuses to start without one (ADR-015 §F3 fail-closed gate).
+* `NAKAMA_FACILITATOR_MAX_TOP_UP_AMOUNT` — hard cap on `/top-up.amount`
+  (default `1_000_000_000` = $1000 USDC). Requests above are rejected with
+  400 before any RPC fetch.
+* `NAKAMA_FACILITATOR_ALLOW_PUBLIC_BIND` — set to `1` to opt-in to a
+  non-loopback bind addr. Without it the facilitator refuses to bind
+  anywhere except `127.0.0.1` / `::1`.
 * `NAKAMA_RPC_URL` (default: `https://api.devnet.solana.com`)
-* `NAKAMA_BIND_ADDR` (default: `0.0.0.0:8080`)
+* `NAKAMA_BIND_ADDR` (default: `127.0.0.1:8080`)
 * `NAKAMA_PROGRAM_ID` (default: hardcoded devnet program ID per `CLAUDE.md`)
 * `NAKAMA_READ_DEMO_KEYPAIR_FROM_STDIN` — when set, reads a 64-byte JSON
   array (Solana CLI keypair format) from stdin at startup. Without it the
   facilitator runs in **assemble-only mode** — `/top-up` returns 503
   `signing_unavailable`, `/computed-status` works.
 
+### Auth scheme
+
+Protected routes require `Authorization: Bearer <API_KEY>`. `/healthz` is
+open by design (orchestrator liveness probe).
+
+Test the gate:
+
+```bash
+# Wrong / missing token → 401.
+curl -sf -o /dev/null -w '%{http_code}\n' \
+  http://localhost:8080/subscriptions/$SUB_PDA/computed-status
+# → 401
+
+# With the right key → 200 (or 404 if PDA doesn't exist).
+curl -s -H "Authorization: Bearer $NAKAMA_FACILITATOR_API_KEY" \
+  http://localhost:8080/subscriptions/$SUB_PDA/computed-status
+```
+
+Rotation: stop the binary, set a new value, restart. Multi-key /
+key-rotation strategy is deferred to `future-work.md`.
+
 ## Demo curl
 
 After the keeper has driven the subscription into `GracePeriod`:
 
 ```bash
-SUB_PDA=...   # from your subscribe tx output
+SUB_PDA=...                                      # from your subscribe tx output
+AUTH="Authorization: Bearer $NAKAMA_FACILITATOR_API_KEY"
 
 # 1. Inspect current state.
-curl -s http://localhost:8080/subscriptions/$SUB_PDA/computed-status | jq .
+curl -s -H "$AUTH" http://localhost:8080/subscriptions/$SUB_PDA/computed-status | jq .
 # → { "state": "InGrace", "grace_until": 1715000000, "seconds_remaining": 600000 }
 
 # 2. Top up 1 USDC (= 1_000_000 base units).
-curl -sX POST -H 'content-type: application/json' \
+curl -sX POST -H "$AUTH" -H 'content-type: application/json' \
   -d '{"amount": 1000000}' \
   http://localhost:8080/subscriptions/$SUB_PDA/top-up | jq .
 # → { "tx_signature": "5xK...4f" }
 
 # 3. Verify state flipped back to Active.
-curl -s http://localhost:8080/subscriptions/$SUB_PDA/computed-status | jq .
+curl -s -H "$AUTH" http://localhost:8080/subscriptions/$SUB_PDA/computed-status | jq .
 # → { "state": "Active", "unlocked_pct": 30, "claimable": 14000 }
 ```
 
@@ -91,8 +125,9 @@ curl -s http://localhost:8080/subscriptions/$SUB_PDA/computed-status | jq .
 
 | `code`                | HTTP status | Notes                                          |
 |-----------------------|-------------|------------------------------------------------|
-| `bad_request`         | 400         | Off-chain pre-validation failed                |
-| `not_found`           | 404         | Subscription PDA not found via RPC             |
+| `bad_request`         | 400         | Off-chain pre-validation failed (incl. `amount > max_top_up_amount`) |
+| `unauthorized`        | 401         | Missing / wrong `Authorization: Bearer <key>` (ADR-015 §F3) |
+| `not_found`           | 404         | Subscription PDA absent, or RPC-returned account has wrong owner / discriminator (ADR-015 §F5) |
 | `signing_unavailable` | 503         | Facilitator started without a demo keypair     |
 | `decode_error`        | 502         | On-chain account bytes don't match expected layout |
 | `rpc_error`           | 502         | Solana RPC failure (no retry-with-backoff)     |
