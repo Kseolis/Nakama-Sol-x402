@@ -1,9 +1,20 @@
 /**
  * Nakama Protocol TypeScript SDK — public surface.
  *
- * Stage-2 of ADR-007 ships the top_up + computed-status flow. Other
- * instructions (subscribe, charge, cancel, cleanup) live elsewhere or
- * will be added in subsequent ADR cycles.
+ * Builders exported below (in addition to PDA helpers, type mirrors, and
+ * F5 owner-check fetchers):
+ *
+ *   subscribe / charge          — on-chain primitives, used inline via
+ *                                 `program.methods` (no dedicated builder)
+ *   topUp                       — ADR-007 (grace recovery)
+ *   cancel / cleanup            — ADR-009 / ADR-013 (decomposed teardown)
+ *   pause / resume              — ADR-006
+ *   openSession / settleUsage /
+ *     closeSession              — ADR-x402-001 (PaySession lifecycle)
+ *   resubscribe                 — ADR-008 (composite cleanup + subscribe
+ *                                 + close_session × N)
+ *   changeRate                  — ADR-005 (composite migration, post-MVP)
+ *   computedStatus              — ADR-007 (off-chain status derivation)
  */
 
 export {

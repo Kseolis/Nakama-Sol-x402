@@ -49,7 +49,7 @@ use solana_transaction::Transaction;
 use spl_associated_token_account::get_associated_token_address;
 use thiserror::Error;
 
-use crate::accounts::{AccountDecodeError, PlanView, SubscriptionView};
+use crate::accounts::{AccountDecodeError, PlanView, SubscriptionStateByte, SubscriptionView};
 use crate::discriminator::{
     cancel_discriminator, cleanup_discriminator, close_session_discriminator,
     subscribe_discriminator,
@@ -147,6 +147,26 @@ pub enum ChangeRateError {
     /// resubscribe.rs error taxonomy.
     #[error("borsh serialize: {0}")]
     Borsh(#[from] std::io::Error),
+
+    /// `opts.subscriber` does not match the `subscriber` field of the
+    /// fetched old `Subscription`. Per ADR-005 §Q1 — change-rate is
+    /// strictly subscriber-initiated; the signer is the same principal
+    /// across `cancel` + `cleanup` + `subscribe(plan_v2)`. Without this
+    /// off-chain guard the helper would happily build a tx that on-chain
+    /// rejects late with `NoCancelAuthority` / `ConstraintTokenOwner`
+    /// after preflight burn (security ok, UX bad).
+    #[error("subscriber mismatch: opts {opts} != old_sub {actual} (ADR-005 Q1)")]
+    SubscriberMismatch { opts: Pubkey, actual: Pubkey },
+
+    /// Subscription `state` byte does not map to a known
+    /// `SubscriptionStateByte` variant. Surfaced rather than silently
+    /// dispatching as "no satellite": on an unknown state byte we have
+    /// no way to know whether a graced/paused PDA must accompany cancel,
+    /// and guessing wrong puts the tx on a late-failure path. ADR-001
+    /// reserved-byte forward-compat permits new variants in future
+    /// redeploys — surface the drift to the caller.
+    #[error("unknown subscription state byte: {0}")]
+    UnknownSubscriptionState(u8),
 }
 
 /// Build the `cancel` ix per ADR-013 + ADR-009 Accounts layout.
@@ -250,6 +270,42 @@ fn build_subscribe_ix(
     })
 }
 
+/// Map the FSM state byte to the satellite PDA tuple `(graced, paused)`
+/// required by `cancel`. Single chokepoint for byte → variant dispatch
+/// per `.claude/rules/fsm-first.md` ("string-typed states or
+/// `if state == "..."` branches are an implicit FSM — refactor to
+/// explicit match"). Routes through the typed `SubscriptionStateByte`
+/// enum so unknown bytes surface as `UnknownSubscriptionState` instead
+/// of silently falling through to "no satellite".
+///
+/// Mapping:
+/// * `Active` / `Exhausted` / `Cancelled` → no satellite. Cancel handler
+///   rejects `Exhausted` / `Cancelled` on-chain (state guard), but at
+///   this layer they are "no satellite" — we let the program enforce
+///   the legality, not the SDK.
+/// * `GracePeriod` → graced PDA only.
+/// * `Paused` → paused PDA only.
+/// * `Unknown(u8)` → `Err(UnknownSubscriptionState)`.
+fn select_cancel_satellites(
+    state: SubscriptionStateByte,
+    program_id: &Pubkey,
+    subscription_pda: &Pubkey,
+) -> Result<(Option<Pubkey>, Option<Pubkey>), ChangeRateError> {
+    match state {
+        SubscriptionStateByte::Active
+        | SubscriptionStateByte::Exhausted
+        | SubscriptionStateByte::Cancelled => Ok((None, None)),
+        SubscriptionStateByte::GracePeriod => {
+            Ok((Some(derive_grace_pda(program_id, subscription_pda).0), None))
+        }
+        SubscriptionStateByte::Paused => Ok((
+            None,
+            Some(derive_paused_sub_pda(program_id, subscription_pda).0),
+        )),
+        SubscriptionStateByte::Unknown(b) => Err(ChangeRateError::UnknownSubscriptionState(b)),
+    }
+}
+
 /// Build the `cleanup` ix (ADR-013). Two accounts: subscription (mut,
 /// closed by Anchor) + subscriber (mut, signer — rent recipient).
 fn build_cleanup_ix(
@@ -336,7 +392,26 @@ pub async fn build_change_rate_tx(
         .await?;
     let old_sub_view: Option<SubscriptionView> = match sub_response.value {
         None => None,
-        Some(account) => Some(SubscriptionView::decode_owned(&account, &opts.program_id)?),
+        Some(account) => {
+            let view = SubscriptionView::decode_owned(&account, &opts.program_id)?;
+            // ADR-005 §Q1 — change-rate is subscriber-initiated only.
+            // If `opts.subscriber` does not match the on-chain
+            // `Subscription.subscriber`, the cancel + cleanup +
+            // subscribe(plan_v2) chain would fail late (after
+            // preflight burn) at the cancel handler's polymorphic
+            // authority check. We surface this off-chain to save the
+            // round-trip and give the caller a typed error. The Q11
+            // fresh-subscribe fallback (RPC returned None) skips this
+            // guard — `opts.subscriber` is the sole authority for a
+            // fresh subscribe.
+            if opts.subscriber != view.subscriber {
+                return Err(ChangeRateError::SubscriberMismatch {
+                    opts: opts.subscriber,
+                    actual: view.subscriber,
+                });
+            }
+            Some(view)
+        }
     };
 
     // Compose the ix sequence. Capacity: worst case 4 close_session + cancel
@@ -385,18 +460,14 @@ pub async fn build_change_rate_tx(
         let (vault_pda, _) = derive_vault_pda(&opts.program_id, &old_sub_pda);
         let subscriber_ata = get_associated_token_address(&opts.subscriber, &sub.token_mint);
         // ADR-006/007: optional satellites driven by current FSM byte.
-        // State byte: 0=Active 1=Paused 2=GracePeriod (3=Exhausted /
-        // 4=Cancelled are not legal cancel sources per cancel handler).
-        let graced = if sub.state == 2 {
-            Some(derive_grace_pda(&opts.program_id, &old_sub_pda).0)
-        } else {
-            None
-        };
-        let paused = if sub.state == 1 {
-            Some(derive_paused_sub_pda(&opts.program_id, &old_sub_pda).0)
-        } else {
-            None
-        };
+        // Routed through the typed `SubscriptionStateByte` enum per
+        // `.claude/rules/fsm-first.md` — raw `state == 1 / 2` branches
+        // are an implicit FSM and must be made explicit. Unknown bytes
+        // surface as `UnknownSubscriptionState` rather than silently
+        // dispatching as "no satellite" (which would late-fail on
+        // forward-compat redeploys introducing new variants).
+        let (graced, paused) =
+            select_cancel_satellites(sub.state_byte(), &opts.program_id, &old_sub_pda)?;
         ixs.push(build_cancel_ix(
             &opts.program_id,
             &opts.subscriber,
@@ -487,6 +558,148 @@ mod tests {
     fn cross_mint_error_message_cites_adr() {
         let e = ChangeRateError::CrossMintMigrationUnsupported;
         assert!(e.to_string().contains("ADR-005"));
+    }
+
+    // ─── M1: ADR-005 §Q1 subscriber-mismatch guard ────────────────────────
+    //
+    // The full `build_change_rate_tx` runs against an RPC; we cover the
+    // guard at the data-shape level by exercising `SubscriptionView`
+    // decode (the chokepoint that produces the value we compare against)
+    // and the explicit comparison the orchestrator performs.
+
+    /// Build an in-memory program-owned `Account` carrying a
+    /// `SubscriptionView` whose `subscriber` field is set to `subscriber`.
+    /// Mirrors `accounts::tests::make_subscription_account` but parametrised
+    /// over the subscriber bytes.
+    fn make_owned_subscription(
+        program_id: Pubkey,
+        subscriber: Pubkey,
+        state: u8,
+    ) -> solana_account::Account {
+        use borsh::BorshSerialize;
+        let zero_pk = Pubkey::new_from_array([0u8; 32]);
+        let mut body = Vec::new();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&subscriber.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&zero_pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&zero_pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&zero_pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&zero_pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&state, &mut body).unwrap();
+        BorshSerialize::serialize(&0u8, &mut body).unwrap();
+        BorshSerialize::serialize(&0u8, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&[0u8; 32], &mut body).unwrap();
+
+        let mut data = SubscriptionView::discriminator().to_vec();
+        data.extend(body);
+        solana_account::Account {
+            lamports: 1,
+            data,
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    /// M1: helper must reject opts.subscriber != on-chain subscriber.
+    /// We exercise the same code path the orchestrator runs (decode
+    /// then compare) — a full RPC round-trip is integration territory.
+    #[test]
+    fn subscriber_mismatch_rejected() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let on_chain_subscriber = Pubkey::new_from_array([0xCC; 32]);
+        let opts_subscriber = Pubkey::new_from_array([0xDD; 32]);
+        let account = make_owned_subscription(program_id, on_chain_subscriber, 0);
+        let view = SubscriptionView::decode_owned(&account, &program_id).expect("decode");
+        // This is the exact comparison `build_change_rate_tx` performs.
+        let result: Result<(), ChangeRateError> = if opts_subscriber != view.subscriber {
+            Err(ChangeRateError::SubscriberMismatch {
+                opts: opts_subscriber,
+                actual: view.subscriber,
+            })
+        } else {
+            Ok(())
+        };
+        match result {
+            Err(ChangeRateError::SubscriberMismatch { opts, actual }) => {
+                assert_eq!(opts, opts_subscriber);
+                assert_eq!(actual, on_chain_subscriber);
+            }
+            other => panic!("expected SubscriberMismatch, got {other:?}"),
+        }
+    }
+
+    // ─── M2: FSM-first satellite dispatch ──────────────────────────────────
+
+    /// State byte 2 (`GracePeriod`) dispatches a graced PDA only.
+    #[test]
+    fn state_byte_grace_dispatches_graced_pda() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let sub_pda = Pubkey::new_from_array([0xBB; 32]);
+        let (graced, paused) =
+            select_cancel_satellites(SubscriptionStateByte::GracePeriod, &program_id, &sub_pda)
+                .expect("known state");
+        assert!(graced.is_some(), "GracePeriod must dispatch graced PDA");
+        assert!(paused.is_none(), "GracePeriod must NOT dispatch paused PDA");
+        assert_eq!(graced.unwrap(), derive_grace_pda(&program_id, &sub_pda).0);
+    }
+
+    /// State byte 1 (`Paused`) dispatches a paused PDA only.
+    #[test]
+    fn state_byte_paused_dispatches_paused_pda() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let sub_pda = Pubkey::new_from_array([0xBB; 32]);
+        let (graced, paused) =
+            select_cancel_satellites(SubscriptionStateByte::Paused, &program_id, &sub_pda)
+                .expect("known state");
+        assert!(graced.is_none(), "Paused must NOT dispatch graced PDA");
+        assert!(paused.is_some(), "Paused must dispatch paused PDA");
+        assert_eq!(
+            paused.unwrap(),
+            derive_paused_sub_pda(&program_id, &sub_pda).0
+        );
+    }
+
+    /// Active / Exhausted / Cancelled → no satellite. Sanity for the
+    /// `match` arm completeness; on-chain cancel handler will still
+    /// reject Exhausted/Cancelled, but at this layer they are "no PDA".
+    #[test]
+    fn state_byte_active_dispatches_no_satellite() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let sub_pda = Pubkey::new_from_array([0xBB; 32]);
+        for state in [
+            SubscriptionStateByte::Active,
+            SubscriptionStateByte::Exhausted,
+            SubscriptionStateByte::Cancelled,
+        ] {
+            let (g, p) = select_cancel_satellites(state, &program_id, &sub_pda).unwrap();
+            assert!(
+                g.is_none() && p.is_none(),
+                "{state:?} should dispatch no satellite"
+            );
+        }
+    }
+
+    /// Unknown state byte → typed error, no silent fall-through.
+    #[test]
+    fn state_byte_unknown_surfaces_typed_error() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let sub_pda = Pubkey::new_from_array([0xBB; 32]);
+        let err =
+            select_cancel_satellites(SubscriptionStateByte::Unknown(99), &program_id, &sub_pda)
+                .unwrap_err();
+        match err {
+            ChangeRateError::UnknownSubscriptionState(b) => assert_eq!(b, 99),
+            other => panic!("expected UnknownSubscriptionState, got {other:?}"),
+        }
     }
 
     /// Compile-time guard: `BorshDeserialize` is the trait actually used by

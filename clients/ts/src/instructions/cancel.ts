@@ -97,9 +97,14 @@ export async function buildCancelIx(
   const gracedSlot: PublicKey | null =
     args.state === SubscriptionState.GracePeriod ? gracedPda : null;
 
-  // TODO(adr-009 IDL): once `anchor build` regenerates `nakama.json` with the
-  // ADR-009 cancel signature, drop `as any` and rely on the typed
-  // `program.methods.cancel()` resolved from the `Nakama` IDL type.
+  // The `as any` cast is permanent under the current package layout, NOT
+  // an IDL-staleness workaround: `Nakama` is aliased to the structural
+  // `Idl` type in `../types.ts` because importing the generated
+  // `nakama/target/types/nakama.ts` would expand tsconfig `rootDir`
+  // outside `clients/ts/` and break the published `dist/` layout. The
+  // IDL itself already carries the ADR-009 `cancel` signature; see
+  // `types.ts` for the rootDir trade-off and the planned
+  // `@nakama/idl-types` split.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const methods = args.program.methods as any;
   return await methods

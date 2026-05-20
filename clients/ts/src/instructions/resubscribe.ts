@@ -90,6 +90,10 @@ const PAY_SESSION_STATE_OPEN = 0;
  * multi-tx flow (close some out-of-band first).
  *
  * @see ADR-008 §"x402 forward-compat" (Q3 / Q4 envelope checks)
+ *
+ * Cross-language note: mirrors the Rust constant
+ * `MAX_INLINE_PAY_SESSION_CLOSES` in the off-chain crate. Names diverge
+ * for historical reasons; symbol-hunt parity is intentional.
  */
 const MAX_ALIVE_PAY_SESSIONS_IN_COMPOSITE = 4;
 

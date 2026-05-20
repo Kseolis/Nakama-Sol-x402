@@ -74,6 +74,10 @@ import { findAlivePaySessions, AlivePaySession } from "./resubscribe";
  *
  * @see ADR-005 §Q4 "Tx-size budget"
  * @see ADR-008 §"x402 forward-compat"
+ *
+ * Cross-language note: mirrors the Rust constant
+ * `MAX_INLINE_PAY_SESSION_CLOSES` in the off-chain crate. Names diverge
+ * for historical reasons; symbol-hunt parity is intentional.
  */
 const MAX_ALIVE_PAY_SESSIONS_IN_COMPOSITE = 4;
 
@@ -91,7 +95,8 @@ export type ChangeRateError =
   | "CrossMintMigrationUnsupported"
   | "TooManyAliveSessions"
   | "OldSubscriptionNotFound"
-  | "NewPlanInactive";
+  | "NewPlanInactive"
+  | "SubscriberMismatch";
 
 /**
  * Inputs for `buildChangeRateTx`.
@@ -264,6 +269,23 @@ export async function buildChangeRateTx(
       opts.newDepositPeriods,
     );
     return new Transaction().add(subscribeIx);
+  }
+
+  // ── Q1 subscriber-binding guard ──────────────────────────────────────
+  // Fail fast (BEFORE the PaySession enumeration RPC and ix assembly) if
+  // the caller-supplied `subscriber` does not match the on-chain
+  // subscription's owner. ADR-005 §Q1 mandates subscriber-initiated
+  // migration only; without this gate the cancel ix would still be built
+  // with `signer = opts.subscriber` and fail late in the runtime with an
+  // opaque `NoCancelAuthority` error. Surface the mismatch here so the
+  // caller can correct their inputs without a wasted simulate / send.
+  // Q11 fresh-subscribe fallback (oldSub === null) is handled above and
+  // short-circuits before this point, so it cannot trigger this guard.
+  if (!opts.subscriber.equals(oldSub.subscriber)) {
+    throw new Error(
+      `SubscriberMismatch: opts.subscriber ${opts.subscriber.toBase58()} != ` +
+        `on-chain ${oldSub.subscriber.toBase58()} (ADR-005 §Q1).`,
+    );
   }
 
   // Sanity defence-in-depth: the OLD subscription's snapshotted token
