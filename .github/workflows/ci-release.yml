@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: rustup show
       - run: cargo fmt --all -- --check
       - run: cd nakama && cargo fmt --all -- --check
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: docker://rhysd/actionlint:1.7.7
         with:
           args: -color
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: rustup show
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -168,7 +168,7 @@ jobs:
     container:
       image: semgrep/semgrep:1.157.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Pinned rulesets (NOT --config=auto, which is non-deterministic — rules
       # resolved from semgrep.dev at scan time can flip pass/fail without code
       # change). Homoglyph rule is in p/security-audit but project allows
@@ -187,7 +187,7 @@ jobs:
     timeout-minutes: 3
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check ADR references in source resolve to docs
         run: |
           set +e
