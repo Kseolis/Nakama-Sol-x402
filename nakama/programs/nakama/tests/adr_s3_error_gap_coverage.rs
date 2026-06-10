@@ -137,7 +137,14 @@ fn settle_usage_on_settling_state_session_rejected() {
 
     let (_plan, sub_pk) = setup_active_subscription(&mut env, &actors, 600, 60, 4);
     let session_id = 7u64;
-    open_session(&mut env, &actors, &sub_pk, session_id, &facilitator.pubkey(), 0);
+    open_session(
+        &mut env,
+        &actors,
+        &sub_pk,
+        session_id,
+        &facilitator.pubkey(),
+        0,
+    );
 
     let (pay_session_pk, _) = common::pay_session_pda(&sub_pk, session_id);
     poke_byte(
@@ -179,7 +186,14 @@ fn close_session_on_settling_state_rejected() {
 
     let (_plan, sub_pk) = setup_active_subscription(&mut env, &actors, 600, 60, 4);
     let session_id = 11u64;
-    open_session(&mut env, &actors, &sub_pk, session_id, &facilitator.pubkey(), 0);
+    open_session(
+        &mut env,
+        &actors,
+        &sub_pk,
+        session_id,
+        &facilitator.pubkey(),
+        0,
+    );
 
     let (pay_session_pk, _) = common::pay_session_pda(&sub_pk, session_id);
     poke_byte(
@@ -220,7 +234,14 @@ fn settle_usage_with_parent_ref_mismatch_rejected() {
 
     let (_plan, sub_pk) = setup_active_subscription(&mut env, &actors, 600, 60, 4);
     let session_id = 13u64;
-    open_session(&mut env, &actors, &sub_pk, session_id, &facilitator.pubkey(), 0);
+    open_session(
+        &mut env,
+        &actors,
+        &sub_pk,
+        session_id,
+        &facilitator.pubkey(),
+        0,
+    );
 
     let (pay_session_pk, _) = common::pay_session_pda(&sub_pk, session_id);
     let foreign = Pubkey::new_unique();
@@ -268,16 +289,19 @@ fn settle_usage_with_wrong_merchant_ata_rejected() {
 
     let (_plan, sub_pk) = setup_active_subscription(&mut env, &actors, 600, 60, 4);
     let session_id = 17u64;
-    open_session(&mut env, &actors, &sub_pk, session_id, &facilitator.pubkey(), 0);
+    open_session(
+        &mut env,
+        &actors,
+        &sub_pk,
+        session_id,
+        &facilitator.pubkey(),
+        0,
+    );
 
     // A correctly-minted but wrong-destination ATA (third party owner).
     let interloper = solana_keypair::Keypair::new();
-    let wrong_ata = common::install_funded_ata(
-        &mut env.svm,
-        &interloper.pubkey(),
-        &common::usdc_mint(),
-        0,
-    );
+    let wrong_ata =
+        common::install_funded_ata(&mut env.svm, &interloper.pubkey(), &common::usdc_mint(), 0);
 
     let (vault_pk, _) = vault_pda(&sub_pk);
     clock::set_clock(&mut env.svm, T0 + 30);
@@ -318,7 +342,9 @@ fn cancel_with_corrupted_zero_period_snapshot_rejected() {
     let mut acct = env.svm.get_account(&sub_pk).expect("sub alive");
     acct.data[SUBSCRIPTION_PERIOD_OFFSET..SUBSCRIPTION_PERIOD_OFFSET + 8]
         .copy_from_slice(&0i64.to_le_bytes());
-    env.svm.set_account(sub_pk, acct).expect("set corrupted sub");
+    env.svm
+        .set_account(sub_pk, acct)
+        .expect("set corrupted sub");
 
     clock::set_clock(&mut env.svm, T0 + 30);
     env.svm.expire_blockhash();
