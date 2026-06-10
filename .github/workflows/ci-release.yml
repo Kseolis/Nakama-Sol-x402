@@ -83,7 +83,7 @@ jobs:
       # with edition2024, required by lockfile deps (base64ct 1.8.3).
       - name: Cache Solana CLI
         id: cache-solana
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/share/solana
           key: solana-agave-3.1.14-${{ runner.os }}
@@ -109,7 +109,7 @@ jobs:
           workspaces: nakama -> nakama/target
       - name: Cache Anchor + Solana CLI binaries
         id: cache-anchor
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/anchor
