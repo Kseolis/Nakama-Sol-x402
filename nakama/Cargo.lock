@@ -1725,7 +1725,7 @@ dependencies = [
  "bytemuck",
  "litesvm",
  "solana-account",
- "solana-hash 3.1.0",
+ "solana-hash 4.3.0",
  "solana-instruction",
  "solana-keypair",
  "solana-message",
