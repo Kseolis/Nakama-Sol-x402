@@ -19,7 +19,9 @@
 //! - `IllegalAmountForTopUp` — `amount == 0` (ADR-007 §I-TOPUP-2).
 //! - `IllegalStateForTopUp`  — state ∉ {Active, Paused, GracePeriod} (ADR-007 §I-TOPUP-3).
 //! - `MissingGraceSatellite` — state == GracePeriod but caller omitted the satellite (ADR-007 §"top_up handler").
-//! - `MathOverflow`          — `deposited_amount + amount` overflowed u64 (ADR-007 §I-TOPUP-8).
+//! - `ClockBackwards`        — `now < entered_grace_at` on GracePeriod recovery (ADR-015 §F2).
+//! - `MathOverflow`          — `deposited_amount + amount` overflowed u64 (ADR-007 §I-TOPUP-8),
+//!   OR `stream_start + grace_duration` overflowed i64 (ADR-015 §F2).
 //!
 //! Errors (Anchor declarative):
 //! - `ConstraintHasOne` (2001)   — signer != subscription.subscriber.
@@ -158,7 +160,38 @@ pub fn top_up_handler(ctx: Context<TopUp>, amount: u64) -> Result<()> {
     // Recovery branch: GracePeriod → Active. The Anchor `close = subscriber`
     // constraint on `graced_subscription` runs at `exit` time (post-handler)
     // for the `Some` case — no manual close CPI needed.
+    //
+    // ADR-015 §F2 — shift `stream_start` by the grace duration so the
+    // unlock formula (ADR-002) does NOT immediately saturate to
+    // `deposited_amount` on the next charge. Symmetric to ADR-006
+    // `resume_handler` shift on Paused → Active (grace is a freeze for
+    // unlock purposes — subscriber should not pay for service-seconds the
+    // merchant did not deliver). Without this shift, the unlock formula
+    //
+    //     unlocked = min((now - stream_start_old) * price / period,
+    //                    deposited_new)
+    //
+    // produces `unlocked == deposited_new` for any `(now - stream_start_old)
+    // * price / period >= deposited_new`, which is exactly the post-grace
+    // condition. Result without the fix: merchant drains the entire top-up
+    // in one charge call. With the shift, the formula resumes from the
+    // exhaustion moment.
     if matches!(current_state, SubscriptionState::GracePeriod) {
+        let now = Clock::get()?.unix_timestamp;
+        let entered_grace_at = ctx
+            .accounts
+            .graced_subscription
+            .as_ref()
+            .ok_or(NakamaError::MissingGraceSatellite)?
+            .entered_grace_at;
+        require!(now >= entered_grace_at, NakamaError::ClockBackwards);
+        let grace_duration = now
+            .checked_sub(entered_grace_at)
+            .ok_or(NakamaError::MathOverflow)?;
+        sub_mut.stream_start = sub_mut
+            .stream_start
+            .checked_add(grace_duration)
+            .ok_or(NakamaError::MathOverflow)?;
         sub_mut.state = SubscriptionState::Active;
         emit!(GraceRecovered {
             subscription: sub_mut.key(),

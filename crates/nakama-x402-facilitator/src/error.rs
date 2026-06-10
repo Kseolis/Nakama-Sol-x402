@@ -24,6 +24,12 @@ pub enum ApiError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    /// Request did not present a valid auth token (ADR-015 §F3).
+    /// Renders as `401 Unauthorized` with a stable `unauthorized` code so
+    /// SDKs can distinguish from a 404 on the subscription PDA.
+    #[error("unauthorized")]
+    Unauthorized,
+
     /// Subscriber keypair not loaded; signing-required endpoint.
     #[error("signing not available: facilitator started without demo keypair")]
     SigningUnavailable,
@@ -52,7 +58,10 @@ impl ApiError {
         match self {
             Self::BadRequest(_) => "bad_request",
             Self::NotFound(_) => "not_found",
+            Self::Unauthorized => "unauthorized",
             Self::SigningUnavailable => "signing_unavailable",
+            Self::Decode(AccountDecodeError::WrongOwner { .. })
+            | Self::Decode(AccountDecodeError::WrongDiscriminator { .. }) => "not_found",
             Self::Decode(_) => "decode_error",
             Self::Rpc(_) => "rpc_error",
             Self::Internal(_) => "internal_error",
@@ -63,7 +72,14 @@ impl ApiError {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::SigningUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            // ADR-015 §F5: wrong owner / wrong discriminator means "no such
+            // program-owned subscription at this address". From the caller's
+            // perspective it's a 404, not a 5xx — leaking internal detail
+            // would let an attacker probe for which PDAs are owned.
+            Self::Decode(AccountDecodeError::WrongOwner { .. })
+            | Self::Decode(AccountDecodeError::WrongDiscriminator { .. }) => StatusCode::NOT_FOUND,
             Self::Decode(_) => StatusCode::BAD_GATEWAY,
             // Both rpc and internal errors are 502/500. We prefer 502 for RPC
             // because the upstream is not us.

@@ -142,7 +142,14 @@ pub fn settle_usage_handler(ctx: Context<SettleUsage>, amount: u64) -> Result<()
     let stream_start = parent_view.stream_start;
     let deposited_amount = parent_view.deposited_amount;
     let withdrawn_amount = parent_view.withdrawn_amount;
-    let rate_per_second = parent_view.rate_per_second;
+    // ADR-015 §F4 — lazy precise math: read `price` / `period` directly.
+    // `rate_per_second` (subscribe-time integer-truncated) is no longer
+    // authoritative for unlock math. Mirrors `charge_handler` §3 verbatim
+    // so the composability invariant (`parent.withdrawn_amount` is the
+    // single source of truth across charge + settle_usage) holds.
+    let price = parent_view.price;
+    let period = parent_view.period;
+    require!(period > 0, NakamaError::InvalidPeriod);
     let parent_pubkey = parent_view.key();
     let parent_bump = parent_view.bump;
     let subscriber_pubkey = parent_view.subscriber;
@@ -151,10 +158,12 @@ pub fn settle_usage_handler(ctx: Context<SettleUsage>, amount: u64) -> Result<()
     let _ = token_mint; // doc-anchor
 
     let elapsed = (now - stream_start) as u64;
-    let unlocked_unbounded = (elapsed as u128)
-        .checked_mul(rate_per_second as u128)
+    let unlocked_u128 = (elapsed as u128)
+        .checked_mul(price as u128)
+        .ok_or(NakamaError::ArithmeticOverflow)?
+        .checked_div(period as u128)
         .ok_or(NakamaError::ArithmeticOverflow)?;
-    let unlocked = u128::min(unlocked_unbounded, deposited_amount as u128) as u64;
+    let unlocked = u128::min(unlocked_u128, deposited_amount as u128) as u64;
     let parent_remaining = unlocked
         .checked_sub(withdrawn_amount)
         .ok_or(NakamaError::ArithmeticOverflow)?;

@@ -63,7 +63,7 @@ sha2 = "0.10"
 # HTTP harness.
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
 
 # Errors / observability.
 thiserror = "2"
@@ -75,6 +75,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bs58 = "0.5"
+# Base64 — UiAccountData::Binary payloads from getProgramAccounts come back
+# encoded; we decode to raw bytes for Borsh. 0.22 is what `bs58` already
+# brings in transitively via the Solana SDK graph.
+base64 = "0.22"
 
 [profile.release]
 lto = "fat"

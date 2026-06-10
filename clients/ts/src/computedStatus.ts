@@ -87,17 +87,36 @@ const DAYS_REMAINING_SENTINEL = 0xffff_ffff;
  * Compute `(unlocked, claimable, utilization, daysRemaining)` for an Active
  * subscription.
  *
- * Mirrors the on-chain unlock formula (ADR-002 §charge math):
- *   unlocked = min(deposited, rate * (now - stream_start))
- *   claimable = unlocked - withdrawn
+ * F4-mirror (ADR-015 §F4 "Lazy precise unlock math"): the canonical
+ * formula is now lazy precise division using the snapshotted
+ * `(price, period)` pair on Subscription:
+ *
+ *   unlocked   = min(deposited, (elapsed * price) / period)
+ *   claimable  = unlocked - withdrawn
+ *
+ * The previous form `rate_per_second * elapsed` under-paid the merchant
+ * by `(price mod period) / period` base units per second of accrual —
+ * up to ~22% on plans where `price < period`. The on-chain math in
+ * `charge.rs` / `cancel.rs` / `settle_usage.rs` is being migrated to
+ * the same formula in the same ADR cycle (anchor-engineer); this
+ * mirror keeps off-chain derive byte-equivalent.
+ *
+ * `Subscription.ratePerSecond` field is retained on-chain for indexer
+ * ergonomics and display (ADR-015 §F4 "rate_per_second is kept for
+ * off-chain consumers ... but no longer authoritative for unlock
+ * math"). Runway calculation here ALSO migrates to (price, period) so
+ * the entire derive uses one source of truth.
  *
  * BigInt arithmetic — never `Number(...)` until final display step.
+ * BigInt division in JS is floor toward zero for non-negative operands;
+ * matches Rust `u128 / u128` semantics.
  *
  * `unlockedPct` is INTEGER 0..=100, mirroring Rust `derive_status`'s `u8`
  * (BLK-007-MAJ-2 — pin boundary contract: cross-language byte-equivalence).
  *
- * `daysRemaining` is INTEGER days of runway from the snapshotted
- * `ratePerSecond`. Mirrors Rust `u32`; sentinel `0xFFFF_FFFF` for zero rate.
+ * `daysRemaining` is INTEGER days of runway from `(price, period)`.
+ * Sentinel `0xFFFF_FFFF` when `price == 0` (defensive — production plans
+ * reject zero-price at subscribe).
  */
 function computeActiveAccrual(
   sub: SubscriptionAccount,
@@ -105,13 +124,18 @@ function computeActiveAccrual(
 ): { unlockedPct: number; claimable: bigint; daysRemaining: number } {
   const deposited = BigInt(sub.depositedAmount.toString());
   const withdrawn = BigInt(sub.withdrawnAmount.toString());
-  const rate = BigInt(sub.ratePerSecond.toString());
+  const price = BigInt(sub.price.toString());
+  const period = BigInt(sub.period.toString());
   const streamStart = BigInt(sub.streamStart.toString());
 
   // Clock-skew defence (ADR-002 §cancel step 3): if validator clock moved
   // backwards relative to stream_start, treat elapsed as 0.
   const elapsed = now > streamStart ? now - streamStart : 0n;
-  const accrued = rate * elapsed;
+
+  // F4-mirror canonical formula. Guard period == 0 defensively (on-chain
+  // `InvalidPeriod` guard rejects this at subscribe, but a corrupt
+  // satellite-state read shouldn't crash the derive).
+  const accrued = period > 0n ? (elapsed * price) / period : 0n;
   const unlocked = accrued < deposited ? accrued : deposited;
   const claimable = unlocked > withdrawn ? unlocked - withdrawn : 0n;
 
@@ -124,14 +148,17 @@ function computeActiveAccrual(
       ? 0
       : Math.min(100, Math.floor(Number((withdrawn * 100n) / deposited)));
 
-  // Runway: remaining liquid balance / rate, in days. Mirrors Rust
-  // `derive_status` runway formula. ZeroRatePerSecond is impossible per
-  // BLK-02 (rate_per_second >= 1 after subscribe) but we guard anyway.
+  // Runway: remaining liquid balance / rate, in days. F4-mirror — derive
+  // rate from (price, period) inline rather than reading the now-advisory
+  // `rate_per_second` snapshot. Formula:
+  //   days_of_runway = (remaining_liquid * period) / (price * SECONDS_PER_DAY)
+  // Algebraically equivalent to `remaining_liquid / rate / SECONDS_PER_DAY`
+  // with exact-arithmetic semantics (no rate truncation).
   const remainingLiquid = deposited > withdrawn ? deposited - withdrawn : 0n;
   const daysRemaining =
-    rate === 0n
+    price === 0n
       ? DAYS_REMAINING_SENTINEL
-      : Number(remainingLiquid / rate / SECONDS_PER_DAY);
+      : Number((remainingLiquid * period) / (price * SECONDS_PER_DAY));
 
   return { unlockedPct: utilization, claimable, daysRemaining };
 }
@@ -282,37 +309,47 @@ export function normalizeSubscriptionAccount(
  * Rust unit test in `crates/nakama-client/src/computed_status.rs`. If a
  * test runner lands later, port these to mocha/vitest verbatim.
  * BLK-007-MAJ-2 / MAJ-3 boundary cases pinned here.
+ *
+ * F4-mirror (ADR-015 §F4): all cases below use the canonical
+ * `(price, period)` snapshot. The previous form referenced
+ * `rate_per_second` which is now advisory only.
  * ─────────────────────────────────────────────────────────────────────────
  *
- * Case 1 — Active, full runway:
- *   sub: { state: Active, deposited: 1_000_000, withdrawn: 0, rate: 1, streamStart: 0 }
+ * Case 1 — Active, full runway (effective rate = 1 base unit/sec):
+ *   sub: { state: Active, deposited: 1_000_000, withdrawn: 0,
+ *          price: 86_400, period: 86_400, streamStart: 0 }
  *   now: 100n
  *   → { kind: "Active", unlockedPct: 0, claimable: 100n }
- *   (1_000_000 / 86_400 ≈ 11.5 days runway → no low-funds gate fires)
+ *   ((100 * 86_400) / 86_400 = 100 unlocked; runway = 1_000_000 / 86_400
+ *    ≈ 11 days → no low-funds gate fires)
  *
  * Case 2 — ActiveLowFunds via runway:
- *   sub: { state: Active, deposited: 86_400, withdrawn: 0, rate: 1, streamStart: 0 }
+ *   sub: { state: Active, deposited: 86_400, withdrawn: 0,
+ *          price: 86_400, period: 86_400, streamStart: 0 }
  *   now: 0n
  *   → { kind: "ActiveLowFunds", unlockedPct: 0, claimable: 0n, daysRemaining: 1 }
  *   (1 day runway < 7 → runway gate fires)
  *
  * Case 3 — ActiveLowFunds via utilization:
- *   sub: { state: Active, deposited: 100_000_000, withdrawn: 85_000_000, rate: 1, streamStart: 0 }
+ *   sub: { state: Active, deposited: 100_000_000, withdrawn: 85_000_000,
+ *          price: 86_400, period: 86_400, streamStart: 0 }
  *   now: 0n
  *   → { kind: "ActiveLowFunds", unlockedPct: 85, claimable: 0n, daysRemaining: 173 }
  *   (15_000_000 / 86_400 ≈ 173 days → runway OK; utilization 85 > 80 → fires)
  *
- * Case 4 — Boundary: utilization exactly 80, runway exactly 7 days:
- *   sub: { state: Active, deposited: 100, withdrawn: 80, rate: 0, streamStart: 0 }
- *   With rate=0 → daysRemaining = sentinel (huge), so only utilization gate
- *   matters. unlockedPct = floor(80*100/100) = 80; 80 > 80 is FALSE → Active.
- *   sub: { state: Active, deposited: 7 * 86_400, withdrawn: 0, rate: 1, streamStart: 0 }
- *   now: 0n → daysRemaining = 7; 7 < 7 is FALSE → Active.
- *   Both strict-inequality boundaries route to Active.
+ * Case 4 — F4 precision proof (the key new test):
+ *   sub: { state: Active, deposited: 10_000_000, withdrawn: 0,
+ *          price: 10_000_000, period: 2_592_000, streamStart: 0 }
+ *   now: 2_592_000n (full 30-day period elapsed)
+ *   → unlocked = (2_592_000 * 10_000_000) / 2_592_000 = 10_000_000 (full period)
+ *   Pre-F4 (rate_per_second = 10_000_000 / 2_592_000 = 3 truncated):
+ *     unlocked_old = 3 * 2_592_000 = 7_776_000 → under-pay by ~22%.
+ *   F4 mirror reproduces the on-chain post-fix value exactly.
  *
  * Case 5 — Zero deposited (defensive):
- *   sub: { state: Active, deposited: 0, withdrawn: 0, rate: 1, streamStart: 0 }
+ *   sub: { state: Active, deposited: 0, withdrawn: 0,
+ *          price: 86_400, period: 86_400, streamStart: 0 }
  *   now: 100n
  *   → { kind: "ActiveLowFunds", unlockedPct: 0, claimable: 0n, daysRemaining: 0 }
- *   (0 / rate = 0 days < 7 → runway gate fires; utilization clamped to 0)
+ *   (remaining_liquid = 0 → runway gate fires; utilization clamped to 0)
  */

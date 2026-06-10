@@ -74,6 +74,17 @@ pub async fn handle(
         ));
     }
 
+    // ADR-015 §F3 — hard upper bound. Bounds single-tx capital loss if the
+    // auth layer is bypassed, and rejects pathological values BEFORE any
+    // RPC roundtrip. Config default = $1000 USDC; tune via env if a demo
+    // run needs a higher one-shot top-up.
+    if req.amount > state.inner.config.max_top_up_amount {
+        return Err(ApiError::BadRequest(format!(
+            "amount {} exceeds configured max_top_up_amount ({})",
+            req.amount, state.inner.config.max_top_up_amount,
+        )));
+    }
+
     let signer = state
         .inner
         .demo_subscriber
@@ -85,12 +96,20 @@ pub async fn handle(
 
     // Read parent Subscription to learn vault_bump, token_mint, and current
     // state byte (for satellite-presence dispatch).
+    //
+    // ADR-015 §F5 / security-audit-patterns P3: `decode_owned` validates
+    // `account.owner == program_id` AND the Anchor account discriminator
+    // BEFORE Borsh decode. Without it an attacker could create a System-
+    // owned account at the same PDA-shaped address (or via rent-exempt
+    // pre-init) carrying arbitrary bytes and the facilitator would sign a
+    // top-up tx against it. Wrong-owner / wrong-disc surface as 404 below.
     let sub_account = rpc
         .get_account_with_commitment(&sub_pda, commitment)
         .await?
         .value
         .ok_or_else(|| ApiError::NotFound(format!("subscription account not found: {sub_pda}")))?;
-    let subscription = SubscriptionView::try_decode(&sub_account.data)?;
+    let program_id_for_decode = state.inner.config.program_id;
+    let subscription = SubscriptionView::decode_owned(&sub_account, &program_id_for_decode)?;
 
     // Defense-in-depth: signer must equal the on-chain `subscription.subscriber`.
     // The on-chain `has_one = subscriber` constraint enforces this anyway,
@@ -102,7 +121,7 @@ pub async fn handle(
         ));
     }
 
-    let program_id = state.inner.config.program_id;
+    let program_id = program_id_for_decode;
     let token_program =
         Pubkey::from_str(SPL_TOKEN_PROGRAM_ID).map_err(|e| ApiError::Internal(e.to_string()))?;
 

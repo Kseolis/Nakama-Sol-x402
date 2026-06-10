@@ -1,0 +1,14 @@
+Nakama Protocol
+Copyright 2026 Nakama Labs
+
+This product includes software developed by Nakama Labs.
+
+Components and their licenses:
+- On-chain Anchor program (nakama/programs/): Apache License 2.0
+- Off-chain Rust services (crates/nakama-client, crates/nakama-x402-facilitator):
+  Business Source License 1.1 (converts to Apache 2.0 on 2030-05-18)
+- TypeScript SDK (clients/ts): MIT License
+
+See LICENSE.md at the repository root for details.
+
+"Nakama" and the Nakama logo are trademarks of Nakama Labs.

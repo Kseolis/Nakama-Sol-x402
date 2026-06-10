@@ -27,3 +27,5 @@ test-ledger/
 
 # Demo runtime artifacts (derivable from re-running clients/ts/scripts/00-full-demo.ts)
 clients/ts/scripts/.demo-stdout.log
+/.agents/
+/skills-lock.json

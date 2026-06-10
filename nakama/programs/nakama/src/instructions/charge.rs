@@ -21,6 +21,8 @@
 //! - `ClockBackwards`            — `now < stream_start`     (ADR-004 §2.j).
 //! - `MathOverflow`              — `checked_*` saturation   (ADR-004 §3).
 //! - `InsufficientUnlockedFunds` — `claimable == 0`         (ADR-004 §3 / §7).
+//! - `InvalidPeriod`             — `period <= 0` snapshot   (ADR-015 §F4).
+//! - `UnexpectedGraceSatellite`  — pre-inited satellite on healthy charge (ADR-015 §F1).
 //!
 //! Errors raised by Anchor declarative constraints (ADR-004 §8 / §9):
 //! - `AtaMismatch`               — wrong destination ATA (`address = ...`).
@@ -101,31 +103,52 @@ pub struct Charge<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    /// ADR-007 §"charge handler tail" + §I-CHARGE-1.
+    /// ADR-007 §"charge handler tail" + §I-CHARGE-1 + ADR-015 §F1.
     ///
-    /// # Off-chain caller contract (BLK-007-MAJ-1)
+    /// # Off-chain caller contract (BLK-007-MAJ-1, revised post-ADR-015 §F1)
     ///
-    /// Off-chain callers (keeper bots, x402 facilitators) MUST always
-    /// pre-derive the PDA `[GRACE_SEED, subscription]` and attach it on
-    /// EVERY charge tx. Keepers cannot reliably predict the exhaustion
-    /// boundary off-chain — clock skew between caller and validator,
-    /// parallel charge races, and rate/period rounding all make
-    /// "predict-then-attach" non-deterministic. The only safe protocol
-    /// is "always attach"; the on-chain handler decides at post-CPI math
-    /// whether to consume the satellite (Active → GracePeriod transition)
-    /// or leave it untouched (init constraint is not fired by Anchor
-    /// codegen on this branch).
+    /// **Account-meta slot is ALWAYS attached** (Anchor's positional account
+    /// ordering requires the slot in every charge tx). What goes in the slot
+    /// depends on whether the caller predicts this charge will exhaust the
+    /// stream:
     ///
-    /// The handler raises `MissingGraceSatellite` if `None` is passed and
-    /// post-CPI math would trigger the Active → GracePeriod transition;
-    /// the keeper must then re-submit with the satellite attached.
+    /// 1. **Routine charge** (predicted post-CPI `withdrawn < deposited`):
+    ///    place the program id (`crate::ID`) as a placeholder. Anchor 1.0.1
+    ///    with the `allow-missing-optionals` cargo feature interprets this
+    ///    as `Option::None`; the `init` constraint is skipped and the
+    ///    handler's healthy-charge branch runs.
     ///
-    /// Passing `program_id` placeholder OR omitting (with the
-    /// `allow-missing-optionals` cargo feature) is a permitted shortcut
-    /// ONLY for hand-built transactions where exhaustion is provably
-    /// impossible — e.g. trivial single-charge demos with a fresh
-    /// subscription where `claimable << deposited`. Production keepers
-    /// and facilitators MUST NOT take this shortcut.
+    /// 2. **Anticipated exhaustion** (predicted post-CPI
+    ///    `withdrawn == deposited`): pre-derive the PDA
+    ///    `[GRACE_SEED, subscription]` and attach it as `Some(pda)`. Anchor
+    ///    fires `init` and the handler's grace-tail branch records the
+    ///    Active → GracePeriod transition.
+    ///
+    /// Off-chain prediction is feasible because the unlock math is
+    /// deterministic in `(now, stream_start, price, period, deposited,
+    /// withdrawn)` — the caller computes `unlocked = (elapsed * price) /
+    /// period` (clamped to `deposited`) for the slot it expects to land in,
+    /// and attaches the real PDA iff that value reaches `deposited`.
+    ///
+    /// # F1 guard interaction (`UnexpectedGraceSatellite` = 6037)
+    ///
+    /// ADR-015 §F1 closes a permissionless pre-init grief vector: any signer
+    /// can plant the satellite on a healthy subscription. The handler's
+    /// `else` branch (non-exhausting charge) therefore raises
+    /// `UnexpectedGraceSatellite` (see `error.rs`) when
+    /// `graced_subscription.is_some()`. **Always sending the real PDA is
+    /// NOT safe** — it bricks every non-exhausting charge with error 6037.
+    /// Callers MUST use the predict-and-conditionally-attach protocol above.
+    ///
+    /// On the inverse mispredict — caller sent `None` but math exhausts —
+    /// the handler raises `MissingGraceSatellite`; the keeper re-submits
+    /// with the satellite attached. Mispredict cost is one wasted tx, not
+    /// a permanent brick.
+    ///
+    /// The test helper `tests/common/ix.rs::charge_ix_full` mirrors this
+    /// protocol: callers thread `Option<Pubkey>` end-to-end; the bytes-on-
+    /// the-wire encoding (`program_id` placeholder vs real PDA) is the
+    /// helper's responsibility.
     ///
     /// `Option<Account<T>>` + `init` — Anchor 1.0.1 codegen runs the `init`
     /// constraint ONLY when the caller passes a real account; on `None` (caller
@@ -191,22 +214,43 @@ pub fn charge_handler(ctx: Context<Charge>) -> Result<()> {
     let stream_start = sub_view.stream_start;
     let deposited_amount = sub_view.deposited_amount;
     let withdrawn_amount = sub_view.withdrawn_amount;
-    let rate_per_second = sub_view.rate_per_second;
+    // ADR-015 §F4 — unlock math no longer reads `rate_per_second` (truncated
+    // by integer division at subscribe). Lazy precise math reads `price` and
+    // `period` directly; one division at the end gives full precision.
+    let price = sub_view.price;
     let period = sub_view.period;
     let subscription_bump = sub_view.bump;
     let subscription_pubkey = sub_view.key();
     let subscriber_pubkey = sub_view.subscriber;
     let plan_pubkey = sub_view.plan;
 
-    // §3 — pure streaming math. u128 intermediate so `elapsed * rate` doesn't
-    // wrap on multi-year streams (ADR-004 §3 — `release-profile overflow-checks`
-    // would panic, but ADR wants explicit `MathOverflow`).
+    // ADR-015 §F4 defence-in-depth — the snapshot is immutable post-subscribe
+    // and subscribe enforces `Plan.period > 0`, so this should be unreachable.
+    // The explicit guard keeps the division safe under hostile/corrupted state.
+    require!(period > 0, NakamaError::InvalidPeriod);
+
+    // §3 — pure streaming math (ADR-015 §F4 lazy precise division).
+    //
+    //     unlocked = min((elapsed * price) / period, deposited_amount)
+    //
+    // u128 intermediate avoids overflow on multi-year streams; one final
+    // checked_div gives an exact result (no rate truncation; merchant
+    // earns the precise per-second fraction). Replaces the previous
+    // `rate_per_second * elapsed` form which under-paid the merchant by
+    // up to `(price mod period) / period` base units/sec.
+    //
+    // Overflow window: `elapsed * price` overflows u128 only when
+    // elapsed > u128::MAX / price ≈ 1.7e29 sec for price=u64::MAX —
+    // unreachable. `checked_mul` is retained as defence-in-depth per
+    // .claude/rules/onchain-conventions.md ("no wrapping_* for CU saving").
     let elapsed = (now - stream_start) as u64; // safe after §2.j
-    let unlocked_unbounded = (elapsed as u128)
-        .checked_mul(rate_per_second as u128)
+    let unlocked_u128 = (elapsed as u128)
+        .checked_mul(price as u128)
+        .ok_or(NakamaError::MathOverflow)?
+        .checked_div(period as u128)
         .ok_or(NakamaError::MathOverflow)?;
     // After `min`, the value is ≤ `deposited_amount` ≤ u64::MAX — cast safe.
-    let unlocked = u128::min(unlocked_unbounded, deposited_amount as u128) as u64;
+    let unlocked = u128::min(unlocked_u128, deposited_amount as u128) as u64;
     let claimable = unlocked
         .checked_sub(withdrawn_amount)
         .ok_or(NakamaError::MathOverflow)?;
@@ -250,24 +294,43 @@ pub fn charge_handler(ctx: Context<Charge>) -> Result<()> {
         .checked_add(claimable)
         .ok_or(NakamaError::MathOverflow)?;
     sub_mut.last_charge_at = now;
-    // `rate_per_second >= 1` is guaranteed by the BLK-02 `ZeroRatePerSecond`
-    // guard in `subscribe` — division is safe.
-    let covered_seconds = i64::try_from(sub_mut.withdrawn_amount / rate_per_second)
-        .map_err(|_| NakamaError::MathOverflow)?;
+    // ADR-015 §F4 — keeper hint `next_charge_at` is derived from the precise
+    // math too. `covered_seconds = (withdrawn * period) / price` is the
+    // inverse of the unlock formula above. `price > 0` and `period > 0`
+    // (defensive snapshot guard at §3 + subscribe-time `ZeroPrice` /
+    // `ZeroPeriod` enforcement). Division is safe.
+    let covered_seconds_u128 = (sub_mut.withdrawn_amount as u128)
+        .checked_mul(period as u128)
+        .ok_or(NakamaError::MathOverflow)?
+        .checked_div(price as u128)
+        .ok_or(NakamaError::MathOverflow)?;
+    let covered_seconds =
+        i64::try_from(covered_seconds_u128).map_err(|_| NakamaError::MathOverflow)?;
     sub_mut.next_charge_at = stream_start
         .checked_add(covered_seconds)
         .ok_or(NakamaError::MathOverflow)?
         .checked_add(period)
         .ok_or(NakamaError::MathOverflow)?;
 
-    // ADR-007 §"charge handler tail" — auto-transition Active → GracePeriod
-    // when the stream is fully consumed. `Option<Account<GracedSubscription>>`
-    // with `init` constraint (see Accounts struct above) makes the satellite
-    // present only when the caller anticipates this branch; on `None` we
-    // raise `MissingGraceSatellite` so the keeper re-submits with the
-    // pre-derived PDA. Init is at-most-once per Subscription lifetime
-    // (subsequent charges from GracePeriod are blocked by the §2.h state
-    // guard at the top of this handler).
+    // ADR-007 §"charge handler tail" + ADR-015 §F1 — auto-transition
+    // Active → GracePeriod when the stream is fully consumed.
+    // `Option<Account<GracedSubscription>>` with `init` constraint (see
+    // Accounts struct above) makes the satellite present only when the caller
+    // anticipates this branch; on `None` we raise `MissingGraceSatellite` so
+    // the keeper re-submits with the pre-derived PDA. Init is at-most-once
+    // per Subscription lifetime (subsequent charges from GracePeriod are
+    // blocked by the §2.h state guard at the top of this handler).
+    //
+    // F1 defence: the `else` branch (healthy charge, no exhaustion) MUST
+    // reject any caller-provided `graced_subscription`. Anchor codegen
+    // (anchor-syn-1.0.2/src/codegen/accounts/constraints.rs:29-50) runs the
+    // `init` constraint inside an `if let Some(...) = ident` wrapper — when
+    // the caller plants a real PDA in the optional slot, init fires and
+    // allocates the satellite. A permissionless attacker can exploit this on
+    // a healthy subscription to pre-poison the satellite slot, bricking the
+    // next honest exhausting charge with `AccountAlreadyInUse`. Rejecting at
+    // handler-time keeps the attacker's ix from succeeding (so no satellite
+    // is left behind for the next charge).
     if sub_mut.withdrawn_amount == sub_mut.deposited_amount {
         // i64 + 604_800 cannot overflow for any realistic clock value
         // (i64::MAX − GRACE_DURATION is in the year ~292 billion AD); checked
@@ -292,6 +355,21 @@ pub fn charge_handler(ctx: Context<Charge>) -> Result<()> {
             entered_grace_at: now,
             grace_until,
         });
+    } else {
+        // ADR-015 §F1 — healthy charge (post-CPI `withdrawn < deposited`).
+        // Reject any caller-provided `GracedSubscription` to defeat the
+        // permissionless-pre-init poison vector. The legitimate caller
+        // protocol is "always attach" for `Option<Account<>>` with `init`
+        // is satisfied because Anchor only fires the `init` body inside the
+        // `Some` arm of the codegen wrapper (verified
+        // anchor-syn-1.0.2/src/codegen/accounts/constraints.rs:29-50). So a
+        // `Some` value here means the satellite was created in this tx —
+        // which is wrong for a healthy charge. `program_id` placeholder
+        // (Option::None) is the only valid shape for non-exhausting charges.
+        require!(
+            ctx.accounts.graced_subscription.is_none(),
+            NakamaError::UnexpectedGraceSatellite
+        );
     }
 
     emit!(SubscriptionCharged {

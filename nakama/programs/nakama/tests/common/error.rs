@@ -76,6 +76,11 @@ pub enum NakamaError {
     IllegalStateForPause = 34,
     UnauthorizedResume = 35,
     IllegalStateForResume = 36,
+    // ADR-015 — Impl-Cycle-2 Security Remediation errors. Codes 6037..6038.
+    // F1: pre-inited grace satellite on healthy charge.
+    // F4: defensive period > 0 guard on snapshot.
+    UnexpectedGraceSatellite = 37,
+    InvalidPeriod = 38,
 }
 
 impl NakamaError {
@@ -160,7 +165,7 @@ pub fn assert_nakama_err<T>(result: TransactionResult, expected: NakamaError) {
 
     if actual_code != expected.code() {
         // Helpfully decode if it's another Nakama variant.
-        let translated = (ERROR_CODE_OFFSET..ERROR_CODE_OFFSET + 32)
+        let translated = (ERROR_CODE_OFFSET..ERROR_CODE_OFFSET + 40)
             .find(|c| *c == actual_code)
             .map(|c| c - ERROR_CODE_OFFSET);
         panic!(

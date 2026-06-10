@@ -11,22 +11,107 @@
 //! `try_from_slice` on the views.
 
 use borsh::BorshDeserialize;
+use sha2::{Digest, Sha256};
+use solana_account::Account;
 use solana_pubkey::Pubkey;
 use thiserror::Error;
 
 use crate::constants::ACCOUNT_DISCRIMINATOR_LEN;
 
-/// Errors surfacing during raw account-data decode. Distinguishes the three
-/// failure modes a caller may want to handle differently:
+/// Errors surfacing during raw account-data decode. Distinguishes the failure
+/// modes a caller may want to handle differently:
 /// * the account didn't exist on RPC,
-/// * the discriminator was the wrong account type (forward-compat dispatch),
+/// * the on-chain owner field didn't match the expected program (spoofed
+///   System-owned account with a plausible-looking discriminator prefix —
+///   ADR-015 §F5, security-audit-patterns.md P3),
+/// * the discriminator was the wrong account type (forward-compat dispatch /
+///   P3 defence-in-depth — `strip_discriminator` historically only checked
+///   length, not value),
 /// * the body was truncated / malformed.
 #[derive(Debug, Error)]
 pub enum AccountDecodeError {
     #[error("account data shorter than discriminator length")]
     TooShort,
+    /// Owner field on the fetched account is not the expected Nakama program.
+    /// An attacker can create a System-owned PDA-shaped account whose first
+    /// 8 bytes match an Anchor discriminator; without this guard the decoder
+    /// would happily Borsh-decode arbitrary bytes as `SubscriptionView`.
+    /// Surface to HTTP as 404, not 500 — the requested object doesn't exist
+    /// as far as the program is concerned.
+    #[error("account owner mismatch: expected {expected}, got {actual}")]
+    WrongOwner { expected: Pubkey, actual: Pubkey },
+    /// Discriminator bytes [0..8] do not match the expected Anchor account
+    /// discriminator for the requested type. Surfaces forward-compat drift
+    /// (caller asked for `Subscription`, on-chain bytes are a `PaySession`)
+    /// and rejects same-program junk accounts that survive the owner check
+    /// but encode a different account variant.
+    #[error("wrong account discriminator: expected {expected:?}, got {actual:?}")]
+    WrongDiscriminator { expected: [u8; 8], actual: [u8; 8] },
     #[error("borsh decode failed: {0}")]
     Borsh(#[from] std::io::Error),
+}
+
+/// Compute the Anchor account discriminator for a named on-chain account type
+/// — first 8 bytes of `SHA256("account:<Name>")`. Mirrors Anchor 1.0
+/// `#[account]` codegen.
+///
+/// We compute on demand rather than caching: the function is only called once
+/// per account fetch, and Sha256 of a 24-byte input is negligible relative to
+/// the surrounding RPC roundtrip.
+pub(crate) fn compute_account_discriminator(name: &str) -> [u8; 8] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"account:");
+    hasher.update(name.as_bytes());
+    let full = hasher.finalize();
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&full[..8]);
+    out
+}
+
+/// Strict decode helper: validate `account.owner == expected_owner` AND that
+/// the leading discriminator bytes match `expected_discriminator` BEFORE
+/// invoking Borsh. This is the single chokepoint for off-chain reads of
+/// program-owned data — ADR-015 §F5, `security-audit-patterns.md` P3.
+///
+/// GRASP role: Information Expert — owns the contract "what does it mean to
+/// trust an RPC-returned account". The keeper, facilitator, indexer, and SDK
+/// composite-tx builders all route program-owned reads through this function
+/// instead of inlining the owner check.
+///
+/// Returns:
+/// * `WrongOwner` — account exists but is owned by another program (spoofed
+///   junk OR caller passed a wrong PDA).
+/// * `WrongDiscriminator` — account is program-owned but its 8-byte type tag
+///   mismatches the requested type. Forward-compat dispatch falls through
+///   this arm too; callers that want to peek at other variants must decode
+///   discriminator explicitly.
+/// * `TooShort` / `Borsh` — body invalid.
+pub fn decode_program_owned<T: BorshDeserialize>(
+    account: &Account,
+    expected_owner: &Pubkey,
+    expected_discriminator: [u8; 8],
+) -> Result<T, AccountDecodeError> {
+    if account.owner != *expected_owner {
+        return Err(AccountDecodeError::WrongOwner {
+            expected: *expected_owner,
+            actual: account.owner,
+        });
+    }
+    let data = account.data.as_slice();
+    if data.len() < ACCOUNT_DISCRIMINATOR_LEN {
+        return Err(AccountDecodeError::TooShort);
+    }
+    let actual: [u8; 8] = data[..ACCOUNT_DISCRIMINATOR_LEN]
+        .try_into()
+        .expect("slice length checked");
+    if actual != expected_discriminator {
+        return Err(AccountDecodeError::WrongDiscriminator {
+            expected: expected_discriminator,
+            actual,
+        });
+    }
+    let body = &data[ACCOUNT_DISCRIMINATOR_LEN..];
+    Ok(T::try_from_slice(body)?)
 }
 
 /// Strip the Anchor discriminator. Returns the body slice or `TooShort`.
@@ -102,10 +187,31 @@ pub struct SubscriptionView {
 }
 
 impl SubscriptionView {
-    /// Decode raw account data (with Anchor discriminator).
+    /// Anchor discriminator for the on-chain `Subscription` account =
+    /// first 8 bytes of `sha256("account:Subscription")`. Stable per
+    /// Anchor 1.0 codegen contract. Computed once per process via the
+    /// `discriminator()` accessor.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("Subscription")
+    }
+
+    /// Decode raw account data (with Anchor discriminator) — legacy
+    /// "trust the bytes" path. Retained for unit tests that build buffers
+    /// from scratch with a zeroed discriminator. Production callsites
+    /// MUST use [`decode_owned`](Self::decode_owned) which validates
+    /// `account.owner` and the discriminator value (ADR-015 §F5).
     pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
         let body = strip_discriminator(data)?;
         Ok(Self::try_from_slice(body)?)
+    }
+
+    /// Strict decode: validates owner and discriminator before Borsh.
+    /// ADR-015 §F5 chokepoint. Use this for every RPC-fetched Subscription.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
     }
 
     pub fn state_byte(&self) -> SubscriptionStateByte {
@@ -125,9 +231,22 @@ pub struct GracedSubscriptionView {
 }
 
 impl GracedSubscriptionView {
+    /// Anchor discriminator for `GracedSubscription`.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("GracedSubscription")
+    }
+
     pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
         let body = strip_discriminator(data)?;
         Ok(Self::try_from_slice(body)?)
+    }
+
+    /// Strict decode — ADR-015 §F5.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
     }
 }
 
@@ -148,9 +267,22 @@ pub struct PausedSubscriptionView {
 }
 
 impl PausedSubscriptionView {
+    /// Anchor discriminator for `PausedSubscription`.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("PausedSubscription")
+    }
+
     pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
         let body = strip_discriminator(data)?;
         Ok(Self::try_from_slice(body)?)
+    }
+
+    /// Strict decode — ADR-015 §F5.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
     }
 
     /// Backwards-compat constructor for callers that needed a placeholder
@@ -162,6 +294,42 @@ impl PausedSubscriptionView {
             paused_at: 0,
             bump: 0,
         }
+    }
+}
+
+/// Borsh view of `Plan` (`state.rs:80-99`, ADR-001 §Plan account).
+///
+/// On-wire size: 8 (discriminator) + 153 (Borsh body) = 161 bytes. Plan is
+/// **immutable post-init** (ADR-001) — there is no `update_plan` ix; rate
+/// changes ship a fresh Plan (ADR-005 §"Decision"). We mirror only the
+/// fields ADR-005 §Q5 cares about for the same-mint check; the rest are
+/// included because Borsh deserialization is positional and dropping a
+/// field mid-struct corrupts everything downstream.
+#[derive(Debug, Clone, BorshDeserialize)]
+pub struct PlanView {
+    pub merchant: Pubkey,
+    pub plan_id: u64,
+    pub price: u64,
+    pub period: i64,
+    pub token_mint: Pubkey,
+    pub merchant_ata: Pubkey,
+    pub bump: u8,
+    pub reserved: [u8; 32],
+}
+
+impl PlanView {
+    /// Anchor discriminator for `Plan`.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("Plan")
+    }
+
+    /// Strict decode — ADR-015 §F5. Validates `account.owner == program_id`
+    /// and the 8-byte discriminator BEFORE Borsh.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
     }
 }
 
@@ -194,9 +362,22 @@ pub struct PaySessionView {
 }
 
 impl PaySessionView {
+    /// Anchor discriminator for `PaySession`.
+    pub fn discriminator() -> [u8; 8] {
+        compute_account_discriminator("PaySession")
+    }
+
     pub fn try_decode(data: &[u8]) -> Result<Self, AccountDecodeError> {
         let body = strip_discriminator(data)?;
         Ok(Self::try_from_slice(body)?)
+    }
+
+    /// Strict decode — ADR-015 §F5.
+    pub fn decode_owned(
+        account: &Account,
+        program_id: &Pubkey,
+    ) -> Result<Self, AccountDecodeError> {
+        decode_program_owned(account, program_id, Self::discriminator())
     }
 }
 
@@ -330,4 +511,116 @@ mod tests {
     }
 
     const GRACE_DURATION_FOR_TEST: i64 = 7 * 24 * 60 * 60;
+
+    // ─── ADR-015 §F5 — owner + discriminator guard tests ───────────────────
+
+    /// Build a valid program-owned account body for a `SubscriptionView`,
+    /// optionally with a corrupted discriminator. Helper for the §F5 tests.
+    fn make_subscription_account(
+        owner: Pubkey,
+        discriminator_override: Option<[u8; 8]>,
+    ) -> Account {
+        let pk = Pubkey::new_from_array([7u8; 32]);
+        let mut body = Vec::new();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&pk.to_bytes(), &mut body).unwrap();
+        BorshSerialize::serialize(&0u8, &mut body).unwrap();
+        BorshSerialize::serialize(&0u8, &mut body).unwrap();
+        BorshSerialize::serialize(&0u8, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0u64, &mut body).unwrap();
+        BorshSerialize::serialize(&0i64, &mut body).unwrap();
+        BorshSerialize::serialize(&[0u8; 32], &mut body).unwrap();
+
+        let disc = discriminator_override.unwrap_or_else(SubscriptionView::discriminator);
+        let mut data = disc.to_vec();
+        data.extend(body);
+
+        Account {
+            lamports: 1,
+            data,
+            owner,
+            executable: false,
+            rent_epoch: 0,
+        }
+    }
+
+    #[test]
+    fn decode_owned_rejects_wrong_owner() {
+        // Attacker creates a System-owned account that round-trips Borsh
+        // perfectly and even has the correct Anchor discriminator (e.g.
+        // copied from a legitimate account). Without the owner guard the
+        // decoder would silently accept it.
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let foreign_owner = Pubkey::new_from_array([0xBB; 32]);
+        let account = make_subscription_account(foreign_owner, None);
+        let err = SubscriptionView::decode_owned(&account, &program_id).unwrap_err();
+        match err {
+            AccountDecodeError::WrongOwner { expected, actual } => {
+                assert_eq!(expected, program_id);
+                assert_eq!(actual, foreign_owner);
+            }
+            other => panic!("expected WrongOwner, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_owned_rejects_wrong_discriminator() {
+        // Owner correct but discriminator is e.g. PaySession's — caller asked
+        // for a Subscription but the on-chain account is something else.
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let fake_disc = PaySessionView::discriminator();
+        let account = make_subscription_account(program_id, Some(fake_disc));
+        let err = SubscriptionView::decode_owned(&account, &program_id).unwrap_err();
+        assert!(
+            matches!(err, AccountDecodeError::WrongDiscriminator { .. }),
+            "expected WrongDiscriminator, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_owned_accepts_correct_owner_and_discriminator() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let account = make_subscription_account(program_id, None);
+        let view = SubscriptionView::decode_owned(&account, &program_id)
+            .expect("valid program-owned account decodes");
+        assert_eq!(view.state, 0);
+    }
+
+    #[test]
+    fn decode_owned_rejects_too_short_data() {
+        let program_id = Pubkey::new_from_array([0xAA; 32]);
+        let account = Account {
+            lamports: 1,
+            data: vec![0u8; 4],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        };
+        let err = SubscriptionView::decode_owned(&account, &program_id).unwrap_err();
+        assert!(
+            matches!(err, AccountDecodeError::TooShort),
+            "expected TooShort, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn discriminators_are_pairwise_distinct() {
+        let s = SubscriptionView::discriminator();
+        let g = GracedSubscriptionView::discriminator();
+        let p = PausedSubscriptionView::discriminator();
+        let ps = PaySessionView::discriminator();
+        for (a, b) in [(s, g), (s, p), (s, ps), (g, p), (g, ps), (p, ps)] {
+            assert_ne!(a, b, "Anchor account discriminators must be distinct");
+        }
+    }
 }

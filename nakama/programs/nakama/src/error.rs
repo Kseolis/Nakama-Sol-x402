@@ -253,4 +253,30 @@ pub enum NakamaError {
     /// FSM guard: `resume` legal only from `Paused`. ADR-006 §"FSM transitions".
     #[msg("Subscription is not Paused; resume not allowed")]
     IllegalStateForResume,
+
+    // ── ADR-015 (Impl-Cycle-2 Security Remediation) ────────────────────────
+    // Codes 6037..6038. Wire-stable; never reorder.
+    /// F1 (ADR-015) — `charge` from `Active` was invoked with a
+    /// `GracedSubscription` satellite already present, but the post-CPI math
+    /// did NOT exhaust the stream (`withdrawn != deposited`). Such a satellite
+    /// could only have been allocated by a permissionless third-party caller
+    /// before this charge ran — see ADR-015 §F1. Anchor codegen for
+    /// `Option<Account<T>>` + `init` (anchor-syn-1.0.2/src/codegen/accounts/
+    /// constraints.rs:29-50) wraps the init body in
+    /// `if let Some(field) = field { ... } else { None }`, so init fires
+    /// only when the caller plants a real PDA in the slot. Attackers exploit
+    /// this to pre-allocate the grace satellite while the subscription is
+    /// healthy, bricking the next honest exhausting charge with
+    /// `AccountAlreadyInUse`. This guard rejects the attacker tx instead.
+    #[msg("graced_subscription must be absent when charge does not exhaust the stream")]
+    UnexpectedGraceSatellite,
+
+    /// F4 (ADR-015) — defensive: `Subscription.period <= 0` after the snapshot,
+    /// which should be impossible (subscribe enforces `Plan.period > 0` and
+    /// the snapshot is immutable per ADR-001). Reached only on a corrupted
+    /// account or hostile downgrade. Distinct from `ZeroPeriod` (which guards
+    /// `Plan.period` at create_plan / subscribe) to disambiguate the failure
+    /// site for operators reading logs.
+    #[msg("Subscription period snapshot is non-positive (corrupted account)")]
+    InvalidPeriod,
 }
