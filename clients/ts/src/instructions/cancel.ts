@@ -20,7 +20,10 @@ import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 import { Nakama, SubscriptionState } from "../types";
-import { deriveGracedSubscriptionPda } from "../pdas";
+import {
+  deriveGracedSubscriptionPda,
+  derivePausedSubscriptionPda,
+} from "../pdas";
 
 export interface BuildCancelIxArgs {
   /** Anchor `Program<Nakama>` from `target/types/nakama.ts`. */
@@ -46,11 +49,16 @@ export interface BuildCancelIxArgs {
   /** Subscriber USDC ATA — refund destination. */
   subscriberAta: PublicKey;
   /**
-   * Current Subscription FSM state. Drives the optional GracedSubscription
-   * slot:
-   *  - Active → null
-   *  - GracePeriod → satellite PDA, so Anchor runs `close = subscriber`.
-   * Other states are illegal for cancel and surface `IllegalStateForCancel`.
+   * Current Subscription FSM state. Drives the two trailing optional
+   * satellite slots (cancel.rs:115-140 — `graced_subscription` then
+   * `paused_subscription`, in that wire order):
+   *  - Active → both null.
+   *  - GracePeriod → `gracedSubscription` PDA, so Anchor runs
+   *    `close = subscriber` on the GracedSubscription satellite.
+   *  - Paused → `pausedSubscription` PDA, so Anchor runs
+   *    `close = subscriber` on the PausedSubscription satellite.
+   * Legal cancel states are exactly `{Active, Paused, GracePeriod}`
+   * (cancel.rs:166-173). Other states surface `IllegalStateForCancel`.
    */
   state: SubscriptionState;
 }
@@ -85,6 +93,22 @@ export interface BuildCancelIxArgs {
  *   state: SubscriptionState.Active,
  * });
  * ```
+ *
+ * @example Cancel from Paused — the PausedSubscription satellite must be
+ * supplied so Anchor can `close = subscriber` it (cancel.rs:132-140). The
+ * `state` arg drives this automatically:
+ * ```ts
+ * const ix = await buildCancelIx({
+ *   program,
+ *   signer: subscriber.publicKey,
+ *   subscriber: subscriber.publicKey,
+ *   subscription: subPda,
+ *   vault: vaultPda,
+ *   merchantAta,
+ *   subscriberAta,
+ *   state: SubscriptionState.Paused,   // wires pausedSubscription PDA
+ * });
+ * ```
  */
 export async function buildCancelIx(
   args: BuildCancelIxArgs,
@@ -93,9 +117,15 @@ export async function buildCancelIx(
     args.program.programId,
     args.subscription,
   );
+  const [pausedPda] = derivePausedSubscriptionPda(
+    args.program.programId,
+    args.subscription,
+  );
 
   const gracedSlot: PublicKey | null =
     args.state === SubscriptionState.GracePeriod ? gracedPda : null;
+  const pausedSlot: PublicKey | null =
+    args.state === SubscriptionState.Paused ? pausedPda : null;
 
   // The `as any` cast is permanent under the current package layout, NOT
   // an IDL-staleness workaround: `Nakama` is aliased to the structural
@@ -118,6 +148,7 @@ export async function buildCancelIx(
       subscriberAta: args.subscriberAta,
       tokenProgram: TOKEN_PROGRAM_ID,
       gracedSubscription: gracedSlot,
+      pausedSubscription: pausedSlot,
     })
     .instruction();
 }
