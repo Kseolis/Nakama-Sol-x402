@@ -79,15 +79,17 @@ jobs:
             nakama -> nakama/target
       # LiteSVM tests load nakama/target/deploy/nakama.so — build it with
       # cargo-build-sbf (ships with the Solana CLI release toolchain).
+      # v3.1.14 = local baseline; its platform-tools (v1.52) bundles cargo >= 1.85
+      # with edition2024, required by lockfile deps (base64ct 1.8.3).
       - name: Cache Solana CLI
         id: cache-solana
         uses: actions/cache@v4
         with:
           path: ~/.local/share/solana
-          key: solana-agave-3.0.0-${{ runner.os }}
+          key: solana-agave-3.1.14-${{ runner.os }}
       - name: Install Solana CLI
         if: steps.cache-solana.outputs.cache-hit != 'true'
-        run: sh -c "$(curl -sSfL https://release.anza.xyz/v3.0.0/install)"
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
       - name: Add Solana to PATH
         run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - name: Build program .so for LiteSVM
@@ -112,11 +114,11 @@ jobs:
           path: |
             ~/.cargo/bin/anchor
             ~/.local/share/solana
-          key: anchor-1.0.1-agave-3.0.0-${{ runner.os }}
+          key: anchor-1.0.1-agave-3.1.14-${{ runner.os }}
       - name: Install Solana CLI
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v3.0.0/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.14/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
       - name: Add Solana to PATH (cache hit path)
         if: steps.cache-anchor.outputs.cache-hit == 'true'
