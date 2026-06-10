@@ -37,7 +37,7 @@ anchor-spl = "1.0.1"
 
 [dev-dependencies]
 # LiteSVM in-process VM (CLAUDE.md: tests are LiteSVM-only).
-litesvm = "0.10.0"
+litesvm = "0.12.0"
 # Solana SDK v3 granular crates (per source-of-truth.md).
 solana-message = "3.0.1"
 solana-transaction = "3.0.2"
