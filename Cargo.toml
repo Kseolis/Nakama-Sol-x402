@@ -58,7 +58,7 @@ borsh = "1.5"
 # Anchor instruction discriminator = sha256("global:<ix_name>")[..8]. We
 # compute these once at startup (lazy static) rather than pulling in
 # `anchor-client`, which drags the full Solana program-runtime dep graph.
-sha2 = "0.10"
+sha2 = "0.11"
 
 # HTTP harness.
 axum = "0.8"
