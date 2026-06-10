@@ -32,7 +32,7 @@ license = "Apache-2.0"
 # We declare loose `^3.0` and let the resolver lift to whatever rpc-client
 # pulls. solana-pubkey gets explicit features (curve25519 for off-chain PDA
 # derivation, borsh for #[derive(BorshDeserialize)] on Pubkey-bearing types).
-solana-pubkey = { version = "3", features = ["curve25519", "borsh"] }
+solana-pubkey = { version = "4", features = ["curve25519", "borsh"] }
 solana-keypair = "3"
 solana-signer = "3"
 solana-instruction = "3"
