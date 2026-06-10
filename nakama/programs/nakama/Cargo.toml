@@ -48,7 +48,7 @@ solana-instruction = "3.0.0"
 solana-hash = "3.0.0"
 solana-program = "3.0.0"
 solana-system-interface = "2.0.0"
-solana-account = "3.0.0"
+solana-account = "4.3.0"
 # SPL Token classic (Token-2022 explicitly rejected by program per ADR-014).
 # `no-entrypoint` REQUIRED on Linux: nakama's lib re-exports
 # `solana_program_entrypoint::entrypoint` via Anchor `#[program]` macro, and
