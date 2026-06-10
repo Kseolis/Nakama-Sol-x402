@@ -6,6 +6,21 @@
 
 *Same escrow, two billing models on Solana.*
 
+<p align="center">
+  <a href="https://github.com/Kseolis/Nakama-Sol-x402/actions/workflows/ci-release.yml"><img src="https://github.com/Kseolis/Nakama-Sol-x402/actions/workflows/ci-release.yml/badge.svg" alt="Tier-2 CI (stage → main)"></a>
+  <a href="https://github.com/Kseolis/Nakama-Sol-x402/actions/workflows/nightly.yml"><img src="https://github.com/Kseolis/Nakama-Sol-x402/actions/workflows/nightly.yml/badge.svg" alt="Nightly full battery"></a>
+  <img src="https://img.shields.io/badge/tests-262%20passing%20·%200%20ignored-brightgreen" alt="262 tests passing, 0 ignored">
+  <img src="https://img.shields.io/badge/error--variant%20coverage-36%2F36%20reachable-brightgreen" alt="error-variant coverage 36/36 reachable">
+</p>
+<p align="center">
+  <a href="https://explorer.solana.com/address/HSbykjMFKgX4HhPBdBzDwMBrRVugatiCXrQEC1J9Ccfm?cluster=devnet"><img src="https://img.shields.io/badge/program-HSbykj…J9Ccfm-9945FF?logo=solana&logoColor=white" alt="Program on devnet explorer"></a>
+  <img src="https://img.shields.io/badge/solana-devnet-9945FF?logo=solana&logoColor=white" alt="Solana devnet">
+  <img src="https://img.shields.io/badge/anchor-1.0.1-blue" alt="Anchor 1.0.1">
+  <img src="https://img.shields.io/badge/rust-1.89.0-orange?logo=rust" alt="Rust 1.89.0">
+  <img src="https://img.shields.io/badge/max%20CU%20per%20ix-15.6%25%20of%20budget-success" alt="max compute units per instruction: 15.6% of 200k budget">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT license">
+</p>
+
 > Solana Frontier hackathon submission · Colosseum · Track: Payments & Remittance 
 
 A Solana program that funds a single USDC escrow once at subscribe time, then lets two independent billing layers — recurring streaming subscriptions and x402 per-call micropayments — withdraw from the same parent account without double-spending. One signature, one deposit, one source of truth.
@@ -81,7 +96,7 @@ parent.withdrawn_amount + amount ≤ parent.deposited_amount
 | Cancel by subscriber and by merchant | shipped | ADR-002, ADR-009, ADR-013 |
 | Pause / Resume with time-frozen continuity | shipped | ADR-006 |
 | x402 PaySession (open, settle, close) sharing parent escrow | shipped | ADR-x402-001 |
-| LiteSVM integration tests | 42 files, 169 tests, green | `nakama/programs/nakama/tests/` |
+| LiteSVM integration tests | 43 files, 170 tests, green | `nakama/programs/nakama/tests/` |
 | TypeScript SDK (PDAs, computed status, instruction builders) | shipped | `clients/ts/src/` |
 | Off-chain Rust client (account decoding, computed status) | shipped | `crates/nakama-client/` |
 | x402 facilitator HTTP harness (axum) | shipped, demo-grade | `crates/nakama-x402-facilitator/` |
@@ -148,6 +163,49 @@ A follow-up hardening cycle (2026-06-10) re-verified all seven remediations agai
 
 Known accepted limitations (demo threat model): the facilitator's Bearer-token comparison is not constant-time (deploy behind a TLS proxy; swap to `subtle::ConstantTimeEq` for production), and the facilitator's computed-status endpoint reads the host clock rather than on-chain time (display-only, never drives a signed transaction).
 
+## Benchmarks
+
+Measured on LiteSVM (in-process SVM, deterministic — no network noise), agave 3.1.14 platform-tools, by a committed benchmark test that drives one full lifecycle through all 11 instructions and asserts every count stays under budget. Reproduce locally:
+
+```bash
+cd nakama && cargo test -p nakama --test cu_benchmarks -- --nocapture | grep -E 'CU_BENCH|SIZE_BENCH'
+```
+
+### Compute units per instruction
+
+The Solana per-instruction default budget is 200 000 CU. The heaviest Nakama instruction uses 15.6 % of it — there is no compute pressure anywhere in the protocol, and no `ComputeBudgetInstruction` is ever required.
+
+| Instruction | CU | % of 200k budget |
+|---|---:|---:|
+| `subscribe` | 31 217 | 15.6 % |
+| `cancel` | 30 790 | 15.4 % |
+| `settle_usage` (x402) | 21 117 | 10.6 % |
+| `charge` | 18 050 | 9.0 % |
+| `top_up` | 15 957 | 8.0 % |
+| `pause` | 14 290 | 7.1 % |
+| `open_session` (x402) | 10 364 | 5.2 % |
+| `create_plan` | 9 342 | 4.7 % |
+| `resume` | 7 981 | 4.0 % |
+| `close_session` (x402) | 6 946 | 3.5 % |
+| `cleanup` | 4 511 | 2.3 % |
+
+The two hot permissionless/delegated paths — keeper `charge` and facilitator `settle_usage` — sit at 9–11 % of budget, which is what makes high-frequency x402 micro-settlement viable without priority-fee gymnastics. The `charge` figure independently cross-checks the 18 050 CU measured during the ADR-015 security audit.
+
+### Account footprint
+
+Per-account rent-exempt deposits, read from chain state by the same benchmark:
+
+| Account | Bytes on-wire | Rent-exempt deposit |
+|---|---:|---:|
+| `Subscription` (parent escrow state) | 275 | 0.00280 SOL |
+| `PaySession` (x402 satellite) | 210 | 0.00235 SOL |
+| Vault `TokenAccount` | 165 | 0.00204 SOL |
+| `Plan` | 161 | 0.00201 SOL |
+| `GracedSubscription` (satellite) | 56 | 0.00128 SOL |
+| `PausedSubscription` (satellite) | 49 | 0.00123 SOL |
+
+A complete subscriber lifecycle (subscription + vault) locks ~0.0048 SOL of rent, every lamport of which is reclaimed on `cancel` + `cleanup` — satellites and vault close back to their payers (see the FSM section and ADR-009/013 rent-flow tables). Program binary: 436 KB.
+
 ## Try it yourself
 
 ```bash
@@ -164,7 +222,7 @@ anchor build
 # Run the LiteSVM integration suite (no validator required)
 cd programs/nakama
 cargo test --release
-# expected: 169 passed; 0 failed; 0 ignored
+# expected: 170 passed; 0 failed; 0 ignored
 
 # Inspect the deployed devnet program
 solana program show HSbykjMFKgX4HhPBdBzDwMBrRVugatiCXrQEC1J9Ccfm \
