@@ -68,7 +68,7 @@ jobs:
   rust-tests:
     name: T1-4 Rust tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - run: rustup show
@@ -77,6 +77,21 @@ jobs:
           workspaces: |
             . -> target
             nakama -> nakama/target
+      # LiteSVM tests load nakama/target/deploy/nakama.so — build it with
+      # cargo-build-sbf (ships with the Solana CLI release toolchain).
+      - name: Cache Solana CLI
+        id: cache-solana
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: solana-agave-3.0.0-${{ runner.os }}
+      - name: Install Solana CLI
+        if: steps.cache-solana.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/v3.0.0/install)"
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Build program .so for LiteSVM
+        run: cd nakama && cargo build-sbf
       - run: cargo test --workspace
       - run: cd nakama && cargo test --workspace --tests
 
@@ -109,7 +124,11 @@ jobs:
       - name: Install Anchor CLI
         if: steps.cache-anchor.outputs.cache-hit != 'true'
         run: cargo install --git https://github.com/coral-xyz/anchor --tag v1.0.1 anchor-cli --locked
-      - run: cd nakama && anchor build
+      # --ignore-keys: target/deploy/nakama-keypair.json is gitignored, so a
+      # fresh CI checkout generates a new keypair that never matches the
+      # declare_id! (HSbyk…). The .so embeds the program ID from source either
+      # way; the keys check only guards local deploy workflows.
+      - run: cd nakama && anchor build --ignore-keys
 
   yaml-lint:
     name: T1-6 actionlint
