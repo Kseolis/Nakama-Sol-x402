@@ -295,8 +295,10 @@ pub struct SubscriptionStarted {
 /// ADR-009 extension: `cancelled_by` records the polymorphic actor
 /// (subscriber OR merchant) so off-chain analytics can split churn (subscriber)
 /// from offboarding/compliance (merchant) without inferring from auxiliary
-/// state. `had_graced_satellite` echoes whether a `GracedSubscription` was
-/// closed as part of cancel — keeper accounting hint.
+/// state. `had_paused_satellite` / `had_graced_satellite` echo whether a
+/// `PausedSubscription` / `GracedSubscription` was closed as part of cancel —
+/// off-chain indexers (ADR-008) need both flags to reconcile satellite rent
+/// flow without re-deriving the closed PDAs. ADR-009 §"Telemetry: event log".
 #[event]
 pub struct SubscriptionCancelled {
     pub subscription: Pubkey,
@@ -308,6 +310,11 @@ pub struct SubscriptionCancelled {
     pub cancelled_by: Pubkey,
     pub final_settled: u64,
     pub refunded: u64,
+    /// `true` iff a `PausedSubscription` satellite was present and closed
+    /// (cancel-from-Paused). ADR-009 §"Telemetry: event log".
+    pub had_paused_satellite: bool,
+    /// `true` iff a `GracedSubscription` satellite was present and closed
+    /// (cancel-from-GracePeriod). ADR-009 §"Telemetry: event log".
     pub had_graced_satellite: bool,
     pub timestamp: i64,
 }

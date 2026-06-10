@@ -285,6 +285,10 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         token::transfer(cpi_ctx, refund)?;
     }
 
+    // ADR-009 §"Telemetry: event log" — both satellite-presence flags so an
+    // off-chain indexer can reconcile satellite rent flow (Paused → subscriber,
+    // Grace → subscriber) without re-deriving the now-closed PDAs.
+    let had_paused_satellite = ctx.accounts.paused_subscription.is_some();
     let had_graced_satellite = ctx.accounts.graced_subscription.is_some();
 
     // Step 11 — set state to Cancelled.
@@ -320,6 +324,7 @@ pub fn cancel_handler(ctx: Context<Cancel>) -> Result<()> {
         cancelled_by,
         final_settled: final_claimable,
         refunded: refund,
+        had_paused_satellite,
         had_graced_satellite,
         timestamp: now,
     });

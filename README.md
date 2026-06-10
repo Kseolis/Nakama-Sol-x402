@@ -45,6 +45,21 @@ The killer line for the pitch: *one Subscription PDA — funded once at subscrib
 
 Both writers CPI into the same vault TokenAccount and bump `parent.withdrawn_amount` atomically. The x402 layer adds a `PaySession` satellite PDA per active session — a reservation that caps facilitator authority — but never holds funds.
 
+### Subscription FSM
+
+```
+                       top_up (from grace)
+              ┌───────────────────────────────┐
+              ▼                               │
+   subscribe ──► Active ──charge exhausts──► GracePeriod ──grace times out──► Exhausted
+              │  ▲   │                          │                                │
+        pause │  │ resume                       │ cancel                         │ cleanup
+              ▼  │                              ▼                                ▼
+            Paused ───────cancel──────────► Cancelled ────────cleanup────► (accounts closed)
+```
+
+States are an enum-based FSM (`SubscriptionState`: `Active`, `Paused`, `GracePeriod`, `Exhausted`, `Cancelled`) with the transition matrix asserted in tests. `Cancelled` is a soft-terminal tombstone — the account stays observable on-chain until `cleanup` reclaims rent (ADR-013). Satellite PDAs (`PausedSubscription`, `GracedSubscription`) exist if-and-only-if the parent is in the matching state; this bidirectional invariant is enforced in every handler that touches them. The x402 `PaySession` has its own three-state FSM (`Open → Settling → Closed`) and requires `parent.state == Active` to settle.
+
 ## The single invariant
 
 Both billing surfaces share one rule, enforced on every withdrawal path (`charge`, `settle_usage`):
@@ -66,7 +81,7 @@ parent.withdrawn_amount + amount ≤ parent.deposited_amount
 | Cancel by subscriber and by merchant | shipped | ADR-002, ADR-009, ADR-013 |
 | Pause / Resume with time-frozen continuity | shipped | ADR-006 |
 | x402 PaySession (open, settle, close) sharing parent escrow | shipped | ADR-x402-001 |
-| LiteSVM integration tests | 30+ files, 100+ tests, green | `nakama/programs/nakama/tests/` |
+| LiteSVM integration tests | 42 files, 169 tests, green | `nakama/programs/nakama/tests/` |
 | TypeScript SDK (PDAs, computed status, instruction builders) | shipped | `clients/ts/src/` |
 | Off-chain Rust client (account decoding, computed status) | shipped | `crates/nakama-client/` |
 | x402 facilitator HTTP harness (axum) | shipped, demo-grade | `crates/nakama-x402-facilitator/` |
@@ -115,6 +130,24 @@ The codebase follows an explicit priority order: **GRASP → KISS → DRY → YA
 
 Testing is LiteSVM-only — in-process, deterministic, no validator boot. Each instruction has a happy-path file plus an invariants file plus an adversarial file. The FSM transition matrix is enforced by name-mapped test files (e.g., `cancel_from_grace.rs`, `adr006_cancel_from_paused.rs`).
 
+## Security posture
+
+**Honest framing first: this code has been audited by LLM agents, not by a professional security firm. That process caught real bugs (below), but it is NOT a substitute for a professional audit before any mainnet deployment.**
+
+The protocol went through a dedicated multi-agent security cycle (ADR-015) — eight parallel auditors with different lenses (access-control, math-precision, economic-security, invariant-derivation, first-principles, and others) over the full on-chain + off-chain surface. Confirmed findings were fixed and each fix is pinned by a regression test:
+
+- **F1 — pre-init grief on the grace satellite.** Permissionless `charge` with an `Option<Account> + init` slot could be abused to create a zero-initialized satellite while the parent stayed `Active`, bricking later honest exhaustion. Fixed with a bidirectional guard: the satellite account must be present if-and-only-if this charge exhausts the stream (`UnexpectedGraceSatellite` / `MissingGraceSatellite`).
+- **F2 — instant drain of grace-recovery top-ups.** `top_up` out of `GracePeriod` raised `deposited_amount` without shifting the streaming anchor, making the entire top-up immediately claimable by the merchant. Fixed: `stream_start` shifts by the time spent in grace, so new funds stream from the recovery moment.
+- **F3 — unauthenticated hot-wallet HTTP endpoint.** The x402 facilitator signed transactions from user-supplied input with no auth. Fixed: Bearer auth middleware (fail-closed on missing key), per-request amount cap, loopback bind by default with explicit opt-in for external exposure, keypair accepted via stdin only.
+- **F4 — rate truncation bias.** Snapshotting `rate = price / period` at subscribe time accumulated integer-division bias on every streamed second. Fixed: lazy precise math — `(elapsed × price) / period` in u128, divided once at each settle site.
+- **F5 — off-chain decode without owner check.** Off-chain readers deserialized accounts without validating `account.owner == program_id`, allowing spoofed-RPC data injection. Fixed: a single `decode_program_owned` chokepoint (owner check, then discriminator check, then Borsh) plus positive 8-byte discriminator `memcmp` filters on `getProgramAccounts`.
+- **F6 — legacy RPC encoding misdecode.** `UiAccountData::LegacyBinary` responses are rejected with a typed error instead of being mis-parsed.
+- **M2 — typed FSM dispatch.** Off-chain consumers dispatch on a typed state enum with a deny-by-default `Corrupt`/`Unknown` arm, never on raw state bytes.
+
+A follow-up hardening cycle (2026-06-10) re-verified all seven remediations against the code (not the ADR prose), re-derived the core invariants from source — `withdrawn ≤ deposited` under both writers, satellite ⟺ state-byte, stream-anchor continuity under pause/resume, rent always flowing to a validated recipient — and closed the remaining gaps: every reachable `#[error_code]` variant now has a behavioral test trigger, and the cancel telemetry event carries both satellite flags. Two writers (`charge`, `settle_usage`) racing the same escrow cannot double-spend: Solana serializes writes to a mutable account, and both paths gate on the same monotonic `withdrawn_amount`.
+
+Known accepted limitations (demo threat model): the facilitator's Bearer-token comparison is not constant-time (deploy behind a TLS proxy; swap to `subtle::ConstantTimeEq` for production), and the facilitator's computed-status endpoint reads the host clock rather than on-chain time (display-only, never drives a signed transaction).
+
 ## Try it yourself
 
 ```bash
@@ -131,7 +164,7 @@ anchor build
 # Run the LiteSVM integration suite (no validator required)
 cd programs/nakama
 cargo test --release
-# expected: 100+ passed; 0 failed
+# expected: 169 passed; 0 failed; 0 ignored
 
 # Inspect the deployed devnet program
 solana program show HSbykjMFKgX4HhPBdBzDwMBrRVugatiCXrQEC1J9Ccfm \
@@ -203,7 +236,9 @@ Deferred from MVP, with a one-line reason each:
 - **x402 facilitator HA.** The facilitator harness is a single axum process; production needs N-of-M signing or a stateless facilitator reading from a queue.
 - **Variable-rate plans.** ADR-005 specifies the math; instruction surface is deferred to post-MVP.
 - **Clock drift mitigation.** Streaming math reads `Clock::unix_timestamp` directly; tolerable on Solana but worth hardening in production.
-- **TS SDK `buildCancelIx` is missing the `pausedSubscription` slot.** Surfaced by the e2e demo: Anchor TS auto-resolves the trailing optional via IDL seeds and fails with `AccountNotInitialized 3012` when no `PausedSubscription` exists. The driver script (`clients/ts/scripts/00-full-demo.ts`) calls `program.methods.cancel()` directly with explicit `pausedSubscription: null` as a workaround. Fix is a one-file SDK extension; deferred to post-hackathon to keep submission-day diffs small.
+- **DoS hardening / rate limiting.** The facilitator has per-request amount caps and auth, but no per-IP rate limiting or abuse throttling; production needs both.
+- **Constant-time auth-token comparison.** The facilitator's Bearer check short-circuits on first differing byte; swap to `subtle::ConstantTimeEq` before any non-loopback production deployment.
+- **Multi-tenant deployment.** One facilitator process serves one merchant key; multi-merchant isolation (key scoping, per-tenant caps) is undesigned.
 
 ## License
 

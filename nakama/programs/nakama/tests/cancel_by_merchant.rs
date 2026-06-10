@@ -86,6 +86,7 @@ struct CancelledEventPayload {
     pub cancelled_by: solana_pubkey::Pubkey,
     pub final_settled: u64,
     pub refunded: u64,
+    pub had_paused_satellite: bool,
     pub had_graced_satellite: bool,
     pub timestamp: i64,
 }
